@@ -1,0 +1,313 @@
+import { execFile } from "node:child_process";
+import { writeFileSync, rmSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+
+const WORKSPACE = join(homedir(), ".openclaw", "workspace");
+const SCRIPTS_DIR = join(WORKSPACE, "scripts");
+const JOBS_DIR = join(WORKSPACE, "jobs");
+const HOLD_FILE = join(WORKSPACE, "keepawake-hold.json");
+const STATE_FILE = join(WORKSPACE, "keepawake-state.json");
+
+function readJson(file) {
+  try {
+    // PowerShell's Set-Content -Encoding utf8 writes a UTF-8 BOM; strip it.
+    let text = readFileSync(file, "utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// Structured job list (newest first) for the app's Jobs screen.
+function listJobsData(limit = 30) {
+  if (!existsSync(JOBS_DIR)) return [];
+  const files = readdirSync(JOBS_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .sort()
+    .reverse()
+    .slice(0, limit);
+  const jobs = [];
+  for (const f of files) {
+    const m = readJson(join(JOBS_DIR, f));
+    if (!m || !m.id) continue;
+    jobs.push({
+      id: m.id,
+      project: m.project ? basename(m.project) : "?",
+      task: m.task ?? "",
+      status: m.status ?? "unknown",
+      started: m.started ?? null,
+      finished: m.finished ?? null,
+    });
+  }
+  return jobs;
+}
+
+function briefInput(input) {
+  if (!input || typeof input !== "object") return "";
+  const v =
+    input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.prompt ?? input.url ?? "";
+  const s = String(v).replace(/\s+/g, " ").trim();
+  return s.length > 80 ? s.slice(0, 80) + "…" : s;
+}
+
+// Turn Claude Code's stream-json (one JSON event per line) into a readable
+// timeline. Falls back to raw text for old plain-text logs.
+function formatClaudeStream(text) {
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  const raw = [];
+  let sawEvent = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    let ev;
+    try {
+      ev = JSON.parse(t);
+    } catch {
+      raw.push(t);
+      continue;
+    }
+    if (!ev || typeof ev !== "object" || !ev.type) continue;
+    sawEvent = true;
+    if (ev.type === "system" && ev.subtype === "init") {
+      out.push(`▶ session started${ev.model ? ` · ${ev.model}` : ""}`);
+    } else if (ev.type === "assistant") {
+      for (const b of ev.message?.content ?? []) {
+        if (b.type === "text" && b.text && b.text.trim()) out.push(`💬 ${b.text.trim()}`);
+        else if (b.type === "tool_use") {
+          const arg = briefInput(b.input);
+          out.push(`🔧 ${b.name}${arg ? ` · ${arg}` : ""}`);
+        }
+      }
+    } else if (ev.type === "result") {
+      const dur = ev.duration_ms ? ` · ${Math.round(ev.duration_ms / 1000)}s` : "";
+      const cost = typeof ev.total_cost_usd === "number" ? ` · $${ev.total_cost_usd.toFixed(2)}` : "";
+      out.push(`${ev.is_error ? "✗ error" : "✓ done"}${dur}${cost}`);
+      if (ev.result && typeof ev.result === "string" && ev.result.trim()) out.push(ev.result.trim());
+    }
+  }
+  if (!sawEvent) return text; // old-style plain log
+  let result = out.join("\n\n");
+  if (raw.length) result += `\n\n— output —\n${raw.join("\n")}`;
+  return result;
+}
+
+function jobLogTail(jobId, maxChars = 8000) {
+  const safe = String(jobId ?? "").replace(/[^0-9A-Za-z_-]/g, "");
+  if (!safe) return "";
+  const log = join(JOBS_DIR, `${safe}.log`);
+  try {
+    // PowerShell's `*>` redirection writes UTF-16 LE; other writers use UTF-8.
+    const buf = readFileSync(log);
+    let text;
+    if (buf[0] === 0xff && buf[1] === 0xfe) text = buf.toString("utf16le");
+    else if (buf[0] === 0xfe && buf[1] === 0xff) text = buf.swap16().toString("utf16le");
+    else text = buf.toString("utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    const formatted = formatClaudeStream(text);
+    return formatted.length > maxChars ? "…" + formatted.slice(formatted.length - maxChars) : formatted || "(no output yet)";
+  } catch {
+    return "(no log yet)";
+  }
+}
+
+// Live keep-awake + active-work status for the app's dashboard.
+function awakeStatus() {
+  const state = readJson(STATE_FILE) ?? {};
+  const running = listJobsData(50).filter((j) => j.status === "running");
+  return {
+    blockingSleep: Boolean(state.blockingSleep),
+    active: Boolean(state.active),
+    holdUntil: state.holdUntil ?? null,
+    checkedAt: state.checkedAt ?? null,
+    runningJobs: running.length,
+  };
+}
+
+// Parse a duration like "2h", "90m", "45s", "1h30m" into milliseconds.
+function parseDurationMs(input) {
+  const s = String(input ?? "").trim().toLowerCase();
+  if (!s) return null;
+  const re = /(\d+)\s*(h|m|s)/g;
+  let total = 0;
+  let matched = false;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    matched = true;
+    const n = parseInt(m[1], 10);
+    total += m[2] === "h" ? n * 3600_000 : m[2] === "m" ? n * 60_000 : n * 1000;
+  }
+  if (!matched) {
+    const bare = parseInt(s, 10); // bare number = minutes
+    if (!Number.isNaN(bare)) return bare * 60_000;
+    return null;
+  }
+  return total;
+}
+
+// "/awake <duration|off>" — write or clear the keep-awake hold the
+// openclaw-awake.ps1 watcher honors. Keeps the PC from sleeping on demand.
+function setAwakeHold(arg) {
+  const a = String(arg ?? "").trim().toLowerCase();
+  if (a === "off" || a === "stop" || a === "0") {
+    try { rmSync(HOLD_FILE, { force: true }); } catch {}
+    return "Keep-awake hold cleared. Normal sleep settings apply (2h idle).";
+  }
+  const ms = parseDurationMs(a || "2h");
+  if (!ms || ms < 60_000) {
+    return "Usage: /awake <duration>  e.g. /awake 2h, /awake 90m, /awake off";
+  }
+  const until = new Date(Date.now() + ms);
+  try {
+    writeFileSync(HOLD_FILE, JSON.stringify({ until: until.toISOString(), setAt: new Date().toISOString() }), "utf8");
+  } catch (e) {
+    return `Couldn't set hold: ${e.message}`;
+  }
+  return `Holding the computer awake until ${until.toLocaleString()} (it won't sleep until then). /awake off to release.`;
+}
+
+function runScript(file, args) {
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(SCRIPTS_DIR, file), ...args],
+      { timeout: 120_000, windowsHide: true },
+      (err, stdout, stderr) => {
+        const out = [stdout, stderr].filter(Boolean).join("\n").trim();
+        if (err && !out) resolve(`Error: ${err.message}`);
+        else resolve(out || "(no output)");
+      },
+    );
+  });
+}
+
+function parseBuildArgs(raw) {
+  let continueSession = false;
+  let rest = (raw ?? "").trim();
+  if (/(^|\s)--continue(\s|$)/.test(rest)) {
+    continueSession = true;
+    rest = rest.replace(/(^|\s)--continue(\s|$)/, " ").trim();
+  }
+  const match = rest.match(/^(\S+)\s+([\s\S]+)$/);
+  if (!match) return null;
+  return { project: match[1], task: match[2], continueSession };
+}
+
+async function runBuild({ project, task, continueSession }) {
+  const args = ["-Project", project, "-Task", task];
+  if (continueSession) args.push("-Continue");
+  return runScript("dispatch-claude.ps1", args);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+export default {
+  id: "code-dispatch",
+  name: "Code Dispatch",
+  description:
+    "Deterministic /build and /jobs chat commands that dispatch coding tasks to Claude Code on this machine.",
+  configSchema: { parse: (value) => value ?? {}, safeParse: (value) => ({ success: true, data: value ?? {} }) },
+  register(api) {
+    // HTTP entry point for the Butler phone app (gateway token auth).
+    // POST /api/v1/code-dispatch  {"action":"build","project":"x","task":"...","continue":false}
+    //                             {"action":"jobs","jobId":"optional"}
+    api.registerHttpRoute({
+      path: "/api/v1/code-dispatch",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        const send = (status, payload) => {
+          res.statusCode = status;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify(payload));
+          return true;
+        };
+        if ((req.method ?? "GET").toUpperCase() !== "POST") {
+          res.setHeader("Allow", "POST");
+          return send(405, { error: "Method Not Allowed" });
+        }
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return send(400, { error: "Invalid JSON body" });
+        }
+        if (body.action === "build") {
+          if (!body.project || !body.task) return send(400, { error: "Need project and task" });
+          const text = await runBuild({
+            project: String(body.project),
+            task: String(body.task),
+            continueSession: Boolean(body.continue),
+          });
+          return send(200, { text });
+        }
+        if (body.action === "jobs") {
+          const text = await runScript(
+            "check-claude.ps1",
+            body.jobId ? ["-JobId", String(body.jobId)] : [],
+          );
+          return send(200, { text });
+        }
+        if (body.action === "jobsData") {
+          return send(200, { jobs: listJobsData(typeof body.limit === "number" ? body.limit : 30) });
+        }
+        if (body.action === "jobLog") {
+          if (!body.jobId) return send(400, { error: "Need jobId" });
+          return send(200, { log: jobLogTail(body.jobId) });
+        }
+        if (body.action === "awake") {
+          return send(200, { text: setAwakeHold(body.duration), status: awakeStatus() });
+        }
+        if (body.action === "status") {
+          return send(200, { status: awakeStatus() });
+        }
+        return send(400, { error: "Unknown action" });
+      },
+    });
+    api.registerCommand({
+      name: "build",
+      description:
+        "Dispatch a coding task to Claude Code: /build <project> <task…>  (add --continue to resume that project's previous session)",
+      acceptsArgs: true,
+      handler: async (ctx) => {
+        const raw = (ctx.args ?? "").trim();
+        if (!raw) {
+          return {
+            text: "Usage: /build <project> <task…>\nAdd --continue to resume the project's previous Claude Code session.",
+          };
+        }
+        const parsed = parseBuildArgs(raw);
+        if (!parsed) {
+          return { text: "Need a project AND a task. Usage: /build <project> <task…>" };
+        }
+        return { text: await runBuild(parsed) };
+      },
+    });
+
+    api.registerCommand({
+      name: "jobs",
+      description: "List Claude Code jobs, or show one with its log: /jobs [id]",
+      acceptsArgs: true,
+      handler: async (ctx) => {
+        const id = (ctx.args ?? "").trim();
+        return { text: await runScript("check-claude.ps1", id ? ["-JobId", id] : []) };
+      },
+    });
+
+    api.registerCommand({
+      name: "awake",
+      description: "Keep the computer from sleeping on demand: /awake <duration> (e.g. 2h, 90m) or /awake off",
+      acceptsArgs: true,
+      handler: async (ctx) => ({ text: setAwakeHold(ctx.args) }),
+    });
+  },
+};

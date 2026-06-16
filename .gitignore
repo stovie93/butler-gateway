@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.DS_Store
+# never commit a real gateway config (it holds the token)
+openclaw.json

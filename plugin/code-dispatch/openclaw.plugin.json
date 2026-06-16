@@ -1,0 +1,13 @@
+{
+  "id": "code-dispatch",
+  "name": "Code Dispatch",
+  "description": "Deterministic /build and /jobs chat commands that dispatch coding tasks to Claude Code on this machine.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
