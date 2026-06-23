@@ -110,11 +110,13 @@ $ws = "$env:USERPROFILE\.openclaw\workspace\scripts"
 New-Item -ItemType Directory -Force $ws | Out-Null
 Copy-Item "<this repo>\scripts\dispatch-claude.ps1" $ws
 Copy-Item "<this repo>\scripts\check-claude.ps1"    $ws
+Copy-Item "<this repo>\scripts\cancel-claude.ps1"   $ws
 Copy-Item "<this repo>\scripts\openclaw-awake.ps1"  "$env:USERPROFILE\openclaw-awake.ps1"
 ```
 
-- `dispatch-claude.ps1` / `check-claude.ps1` are called by the plugin (it looks for them in
-  `~/.openclaw/workspace/scripts`). Dispatched projects are created under `~/repos/<name>`.
+- `dispatch-claude.ps1` / `check-claude.ps1` / `cancel-claude.ps1` are called by the plugin (it
+  looks for them in `~/.openclaw/workspace/scripts`). Dispatched projects are created under
+  `~/repos/<name>`.
 - `openclaw-awake.ps1` is the keep-awake watcher. Start it once (it's a singleton):
   ```powershell
   Start-Process powershell -ArgumentList "-NoProfile","-WindowStyle","Hidden","-File","$env:USERPROFILE\openclaw-awake.ps1"
@@ -189,3 +191,8 @@ Hit **Test**, save, and you're live.
 - **Model:** dispatched builds use whatever model the `claude` CLI is configured to use.
 - **Security:** builds run with `--dangerously-skip-permissions` so they're autonomous. Keep
   the gateway tailnet-only and the token private — anyone with both can run code on your PC.
+  Every `build` and `cancel` is recorded (append-only) in
+  `~/.openclaw/workspace/dispatch-audit.log` for an after-the-fact trail.
+- **Job lifecycle:** dispatched jobs record their runner PID, so `/cancel <id>` kills the
+  process tree. On gateway start, jobs left `running` by a crash/reboot are marked
+  `interrupted`, and job artifacts older than 14 days (or beyond the newest 200) are pruned.

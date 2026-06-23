@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { writeFileSync, rmSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -8,6 +8,79 @@ const SCRIPTS_DIR = join(WORKSPACE, "scripts");
 const JOBS_DIR = join(WORKSPACE, "jobs");
 const HOLD_FILE = join(WORKSPACE, "keepawake-hold.json");
 const STATE_FILE = join(WORKSPACE, "keepawake-state.json");
+const AUDIT_FILE = join(WORKSPACE, "dispatch-audit.log");
+
+// Terminal job states (a runner is no longer expected to be working).
+const TERMINAL = ["done", "failed", "canceled", "interrupted"];
+
+// Append-only audit trail for code-executing / state-changing actions.
+// This endpoint can run arbitrary code on the host, so every build/cancel is logged.
+function appendAudit(entry) {
+  try {
+    const e = { ts: new Date().toISOString(), ...entry };
+    if (typeof e.task === "string" && e.task.length > 200) e.task = e.task.slice(0, 200) + "…";
+    appendFileSync(AUDIT_FILE, JSON.stringify(e) + "\n", "utf8");
+  } catch {}
+}
+
+// process.kill(pid, 0) probes existence without signalling. EPERM means the
+// process exists but is owned by someone else — still "alive" for our purposes.
+function isPidAlive(pid) {
+  if (typeof pid !== "number" || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+
+// On startup, any job still marked "running" whose runner process is gone was
+// orphaned by a crash/reboot. Flip it to "interrupted" so it doesn't hang forever.
+function reconcileJobs() {
+  if (!existsSync(JOBS_DIR)) return;
+  for (const f of readdirSync(JOBS_DIR)) {
+    if (!f.endsWith(".json")) continue;
+    const file = join(JOBS_DIR, f);
+    const m = readJson(file);
+    if (!m || m.status !== "running") continue;
+    if (isPidAlive(m.runnerPid)) continue; // genuinely still building
+    m.status = "interrupted";
+    m.finished = new Date().toISOString();
+    try {
+      writeFileSync(file, JSON.stringify(m, null, 2), "utf8");
+    } catch {}
+  }
+}
+
+function removeJobArtifacts(id) {
+  const safe = String(id).replace(/[^0-9A-Za-z_-]/g, "");
+  if (!safe) return;
+  for (const ext of [".json", ".log", ".task.txt", ".runner.ps1", ".notify.log"]) {
+    try {
+      rmSync(join(JOBS_DIR, safe + ext), { force: true });
+    } catch {}
+  }
+}
+
+// Keep the jobs dir from growing forever: drop finished jobs older than
+// maxAgeDays, and anything beyond the newest keepLast. Never touch running jobs.
+function pruneJobs({ maxAgeDays = 14, keepLast = 200 } = {}) {
+  if (!existsSync(JOBS_DIR)) return;
+  const metas = readdirSync(JOBS_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => ({ id: f.slice(0, -5), meta: readJson(join(JOBS_DIR, f)) }))
+    .filter((x) => x.meta && x.meta.id);
+  // ids are yyyyMMdd-HHmmss, so lexicographic sort == chronological. Newest first.
+  metas.sort((a, b) => (a.id < b.id ? 1 : -1));
+  const cutoff = Date.now() - maxAgeDays * 86_400_000;
+  metas.forEach((x, i) => {
+    if (x.meta.status === "running") return;
+    const t = Date.parse(x.meta.finished ?? x.meta.started ?? "");
+    const tooOld = Number.isFinite(t) && t < cutoff;
+    if (tooOld || i >= keepLast) removeJobArtifacts(x.id);
+  });
+}
 
 function readJson(file) {
   try {
@@ -39,6 +112,9 @@ function listJobsData(limit = 30) {
       status: m.status ?? "unknown",
       started: m.started ?? null,
       finished: m.finished ?? null,
+      // Optional extras (older clients ignore unknown fields).
+      exitCode: typeof m.exitCode === "number" ? m.exitCode : null,
+      result: m.result ?? null,
     });
   }
   return jobs;
@@ -210,6 +286,9 @@ function readBody(req) {
   });
 }
 
+// Named exports for unit testing the pure helpers (see index.test.js).
+export { formatClaudeStream, parseDurationMs, parseBuildArgs, briefInput };
+
 export default {
   id: "code-dispatch",
   name: "Code Dispatch",
@@ -217,9 +296,17 @@ export default {
     "Deterministic /build and /jobs chat commands that dispatch coding tasks to Claude Code on this machine.",
   configSchema: { parse: (value) => value ?? {}, safeParse: (value) => ({ success: true, data: value ?? {} }) },
   register(api) {
+    // Startup housekeeping: heal jobs orphaned by a crash/reboot, then prune old artifacts.
+    try {
+      reconcileJobs();
+      pruneJobs();
+    } catch {}
+
     // HTTP entry point for the Butler phone app (gateway token auth).
     // POST /api/v1/code-dispatch  {"action":"build","project":"x","task":"...","continue":false}
     //                             {"action":"jobs","jobId":"optional"}
+    //                             {"action":"cancel","jobId":"..."}
+    // GET  /api/v1/code-dispatch/stream?jobId=...  (SSE live log)
     api.registerHttpRoute({
       path: "/api/v1/code-dispatch",
       auth: "gateway",
@@ -243,11 +330,18 @@ export default {
         }
         if (body.action === "build") {
           if (!body.project || !body.task) return send(400, { error: "Need project and task" });
+          appendAudit({ action: "build", source: "http", project: String(body.project), task: String(body.task) });
           const text = await runBuild({
             project: String(body.project),
             task: String(body.task),
             continueSession: Boolean(body.continue),
           });
+          return send(200, { text });
+        }
+        if (body.action === "cancel") {
+          if (!body.jobId) return send(400, { error: "Need jobId" });
+          appendAudit({ action: "cancel", source: "http", jobId: String(body.jobId) });
+          const text = await runScript("cancel-claude.ps1", ["-JobId", String(body.jobId)]);
           return send(200, { text });
         }
         if (body.action === "jobs") {
@@ -273,6 +367,75 @@ export default {
         return send(400, { error: "Unknown action" });
       },
     });
+
+    // Live job-log stream (Server-Sent Events). Clients open this while a job is
+    // running for true live progress instead of 3s polling; each event carries a
+    // full formatted snapshot, and a final `event: end` carries the result.
+    api.registerHttpRoute({
+      path: "/api/v1/code-dispatch/stream",
+      auth: "gateway",
+      match: "exact",
+      handler: (req, res) => {
+        const jobId = String(new URL(req.url, "http://localhost").searchParams.get("jobId") ?? "")
+          .replace(/[^0-9A-Za-z_-]/g, "");
+        if (!jobId) {
+          res.statusCode = 400;
+          res.end("Need jobId");
+          return true;
+        }
+        const metaFile = join(JOBS_DIR, `${jobId}.json`);
+        if (!existsSync(metaFile)) {
+          res.statusCode = 404;
+          res.end("No such job");
+          return true;
+        }
+        const logFile = join(JOBS_DIR, `${jobId}.log`);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+        let lastSize = -1;
+        let lastBeat = Date.now();
+        let tick;
+        const cleanup = () => {
+          if (tick) clearInterval(tick);
+          tick = null;
+        };
+        const sendSnapshot = () => {
+          res.write(`data: ${JSON.stringify({ log: jobLogTail(jobId, 100_000) })}\n\n`);
+        };
+
+        sendSnapshot();
+        try { lastSize = statSync(logFile).size; } catch {}
+
+        tick = setInterval(() => {
+          let size = -1;
+          try { size = statSync(logFile).size; } catch {}
+          if (size !== lastSize) {
+            lastSize = size;
+            lastBeat = Date.now();
+            sendSnapshot();
+          }
+          const m = readJson(metaFile);
+          if (m && TERMINAL.includes(m.status)) {
+            res.write(`event: end\ndata: ${JSON.stringify({ status: m.status, result: m.result ?? null, exitCode: m.exitCode ?? null })}\n\n`);
+            cleanup();
+            res.end();
+            return;
+          }
+          if (Date.now() - lastBeat > 20_000) {
+            lastBeat = Date.now();
+            res.write(`: keepalive\n\n`);
+          }
+        }, 1000);
+
+        req.on("close", cleanup);
+        return true;
+      },
+    });
+
     api.registerCommand({
       name: "build",
       description:
@@ -289,7 +452,20 @@ export default {
         if (!parsed) {
           return { text: "Need a project AND a task. Usage: /build <project> <task…>" };
         }
+        appendAudit({ action: "build", source: "command", project: parsed.project, task: parsed.task });
         return { text: await runBuild(parsed) };
+      },
+    });
+
+    api.registerCommand({
+      name: "cancel",
+      description: "Cancel a running Claude Code job: /cancel <id>",
+      acceptsArgs: true,
+      handler: async (ctx) => {
+        const id = (ctx.args ?? "").trim();
+        if (!id) return { text: "Usage: /cancel <jobId>" };
+        appendAudit({ action: "cancel", source: "command", jobId: id });
+        return { text: await runScript("cancel-claude.ps1", ["-JobId", id]) };
       },
     });
 

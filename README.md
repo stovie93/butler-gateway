@@ -14,9 +14,10 @@ If the apps are the remote controls, this is the machine they control.
 ## What's in here
 
 ```
-plugin/code-dispatch/      OpenClaw plugin: adds POST /api/v1/code-dispatch + /build /jobs /awake chat commands
-scripts/dispatch-claude.ps1   launches a headless Claude Code build for a project, tracks it as a job
+plugin/code-dispatch/      OpenClaw plugin: adds POST /api/v1/code-dispatch (+ SSE /stream) and /build /jobs /cancel /awake chat commands
+scripts/dispatch-claude.ps1   launches a headless Claude Code build for a project, tracks it as a job (records PID + result summary)
 scripts/check-claude.ps1      lists/inspects jobs and marks them reported
+scripts/cancel-claude.ps1     cancels a running job (kills the runner process tree, marks it canceled)
 scripts/openclaw-awake.ps1    keeps the PC awake only while a build (or an /awake hold) is active
 config/openclaw.example.json  sanitized example gateway config (token redacted)
 SETUP.md                      full end-to-end install + run guide
@@ -29,8 +30,9 @@ Once set up, the gateway exposes (token-authenticated, tailnet-only):
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat against your local Ollama model (streaming) |
-| `POST /api/v1/code-dispatch` | `build` / `jobsData` / `jobLog` / `awake` / `status` actions used by the apps |
-| `/build`, `/jobs`, `/awake` | the same actions as chat commands (e.g. over WhatsApp) |
+| `POST /api/v1/code-dispatch` | `build` / `cancel` / `jobsData` / `jobLog` / `awake` / `status` actions used by the apps |
+| `GET /api/v1/code-dispatch/stream?jobId=` | SSE live job-log stream (real-time progress; apps fall back to polling) |
+| `/build`, `/jobs`, `/cancel`, `/awake` | the same actions as chat commands (e.g. over WhatsApp) |
 
 Dispatched builds run `claude -p --output-format stream-json`, so job logs fill in **live**
 and the apps can show real-time progress.

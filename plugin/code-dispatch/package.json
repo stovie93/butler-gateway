@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Deterministic /build and /jobs chat commands that dispatch coding tasks to Claude Code.",
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "openclaw": {
     "extensions": [
       "./index.js"

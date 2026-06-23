@@ -30,6 +30,15 @@ if ($JobId) {
     Write-Output "Task:     $($meta.task)"
     Write-Output "Started:  $($meta.started)"
     if ($meta.finished) { Write-Output "Finished: $($meta.finished)" }
+    if ($meta.result) {
+        $r = $meta.result
+        $bits = @()
+        if ($null -ne $r.durationMs) { $bits += "$([math]::Round($r.durationMs / 1000))s" }
+        if ($null -ne $r.costUsd)    { $bits += ('${0:N2}' -f [double]$r.costUsd) }
+        if ($r.isError)              { $bits += 'error' }
+        if ($bits.Count) { Write-Output "Outcome:  $($bits -join ' · ')" }
+        if ($r.summary)  { Write-Output "Summary:  $($r.summary)" }
+    }
     $log = "$jobsDir\$JobId.log"
     if (Test-Path $log) {
         Write-Output ""
@@ -43,7 +52,7 @@ $jobs = Get-ChildItem $jobsDir -Filter "*.json" | Sort-Object Name -Descending
 if (-not $jobs) { Write-Output "No jobs yet."; exit 0 }
 foreach ($file in $jobs | Select-Object -First 15) {
     $meta = Get-Content $file.FullName -Raw | ConvertFrom-Json
-    $flag = if ($meta.status -in @('done', 'failed') -and -not $meta.reported) { ' *UNREPORTED*' } else { '' }
+    $flag = if ($meta.status -in @('done', 'failed', 'canceled', 'interrupted') -and -not $meta.reported) { ' *UNREPORTED*' } else { '' }
     $taskBrief = if ($meta.task.Length -gt 70) { $meta.task.Substring(0, 70) + '…' } else { $meta.task }
     Write-Output "$($meta.id)  [$($meta.status)]$flag  $(Split-Path $meta.project -Leaf): $taskBrief"
 }

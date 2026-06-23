@@ -57,12 +57,37 @@ $continueFlag = if ($Continue) { '--continue' } else { '' }
 
 $runner = @"
 Set-Location '$proj'
+# Record our own PID so the job can be canceled (taskkill /T) and so startup
+# reconciliation can tell a live runner from one killed by a crash/reboot.
+try {
+    `$m0 = Get-Content '$jobsDir\$id.json' -Raw | ConvertFrom-Json
+    `$m0 | Add-Member -NotePropertyName runnerPid -NotePropertyValue `$PID -Force
+    `$m0 | ConvertTo-Json | Set-Content '$jobsDir\$id.json' -Encoding utf8
+} catch {}
 Get-Content '$taskFile' -Raw | claude -p $continueFlag --output-format stream-json --verbose --dangerously-skip-permissions *> '$log'
 `$code = `$LASTEXITCODE
 `$meta = Get-Content '$jobsDir\$id.json' -Raw | ConvertFrom-Json
 `$meta.status = if (`$code -eq 0) { 'done' } else { 'failed' }
 `$meta | Add-Member -NotePropertyName finished -NotePropertyValue (Get-Date -Format o) -Force
-`$meta | ConvertTo-Json | Set-Content '$jobsDir\$id.json' -Encoding utf8
+`$meta | Add-Member -NotePropertyName exitCode -NotePropertyValue `$code -Force
+# Persist a summary from the final stream-json result event so the apps don't
+# have to re-parse the whole log on every poll. Best-effort: never block the status write.
+try {
+    `$resultLine = Get-Content '$log' -ErrorAction Stop | Where-Object { `$_ -match '"type":"result"' } | Select-Object -Last 1
+    if (`$resultLine) {
+        `$r = `$resultLine | ConvertFrom-Json
+        `$summary = [string]`$r.result
+        if (`$summary.Length -gt 500) { `$summary = `$summary.Substring(0, 500) + [char]0x2026 }
+        `$resObj = [pscustomobject]@{
+            durationMs = `$r.duration_ms
+            costUsd    = `$r.total_cost_usd
+            isError    = [bool]`$r.is_error
+            summary    = `$summary
+        }
+        `$meta | Add-Member -NotePropertyName result -NotePropertyValue `$resObj -Force
+    }
+} catch {}
+`$meta | ConvertTo-Json -Depth 5 | Set-Content '$jobsDir\$id.json' -Encoding utf8
 # Wake the butler so it reports the result to Jordan right away (WhatsApp/app).
 `$note = "SYSTEM EVENT: Claude Code job $id for project '$(Split-Path $proj -Leaf)' just finished with status `$(`$meta.status). Use the code-dispatch skill: check the job log, send Jordan a short plain-text summary of the outcome, then mark it reported."
 openclaw agent --agent main --message `$note *> "$jobsDir\$id.notify.log"
