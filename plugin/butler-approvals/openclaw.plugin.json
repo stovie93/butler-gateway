@@ -1,0 +1,19 @@
+{
+  "id": "butler-approvals",
+  "name": "Butler Approvals",
+  "description": "Gate the butler agent's sensitive tool calls behind an approval you grant from the Butler app.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "sensitiveTools": { "type": "array", "items": { "type": "string" } },
+      "defaultSeverity": { "type": "string", "enum": ["info", "warning", "critical"] },
+      "timeoutMs": { "type": "number" },
+      "timeoutBehavior": { "type": "string", "enum": ["allow", "deny"] },
+      "enableTestCommand": { "type": "boolean" }
+    }
+  }
+}

@@ -15,6 +15,7 @@ If the apps are the remote controls, this is the machine they control.
 
 ```
 plugin/code-dispatch/      OpenClaw plugin: adds POST /api/v1/code-dispatch (+ SSE /stream) and /build /jobs /cancel /awake chat commands
+plugin/butler-approvals/   OpenClaw plugin: gates the agent's sensitive tool calls behind an approval you grant from the app (POST /api/v1/approvals + SSE /stream)
 scripts/dispatch-claude.ps1   launches a headless Claude Code build for a project, tracks it as a job (records PID + result summary)
 scripts/check-claude.ps1      lists/inspects jobs and marks them reported
 scripts/cancel-claude.ps1     cancels a running job (kills the runner process tree, marks it canceled)
@@ -32,6 +33,8 @@ Once set up, the gateway exposes (token-authenticated, tailnet-only):
 | `POST /v1/chat/completions` | OpenAI-compatible chat against your local Ollama model (streaming) |
 | `POST /api/v1/code-dispatch` | `build` / `cancel` / `jobsData` / `jobLog` / `awake` / `status` actions used by the apps |
 | `GET /api/v1/code-dispatch/stream?jobId=` | SSE live job-log stream (real-time progress; apps fall back to polling) |
+| `POST /api/v1/approvals` | `list` / `decide` / `history` — pending approvals the agent is waiting on |
+| `GET /api/v1/approvals/stream` | SSE live approval stream (pending/resolved events for the app) |
 | `/build`, `/jobs`, `/cancel`, `/awake` | the same actions as chat commands (e.g. over WhatsApp) |
 
 Dispatched builds run `claude -p --output-format stream-json`, so job logs fill in **live**

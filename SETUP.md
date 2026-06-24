@@ -79,26 +79,46 @@ You should see JSON event lines ending in a `"type":"result"` event.
 
 ---
 
-## 4. Install the code-dispatch plugin
+## 4. Install the plugins
 
-The plugin only uses Node built-ins, so installing is copy + enable:
+Both plugins only use Node built-ins, so installing is copy + enable:
 
 ```powershell
-$src = "<this repo>\plugin\code-dispatch"
-Copy-Item $src "$env:USERPROFILE\.openclaw\extensions\code-dispatch" -Recurse -Force
+Copy-Item "<this repo>\plugin\code-dispatch"     "$env:USERPROFILE\.openclaw\extensions\code-dispatch"     -Recurse -Force
+Copy-Item "<this repo>\plugin\butler-approvals"   "$env:USERPROFILE\.openclaw\extensions\butler-approvals"   -Recurse -Force
 ```
 
-Enable it in `~/.openclaw/openclaw.json` under `plugins.entries`:
+Enable them in `~/.openclaw/openclaw.json` under `plugins.entries`:
 
 ```json
-"plugins": { "entries": { "code-dispatch": { "enabled": true } } }
+"plugins": {
+  "entries": {
+    "code-dispatch": { "enabled": true },
+    "butler-approvals": {
+      "enabled": true,
+      "config": {
+        "sensitiveTools": [],
+        "timeoutMs": 120000,
+        "timeoutBehavior": "deny",
+        "enableTestCommand": true
+      }
+    }
+  }
+}
 ```
 
-Restart and confirm it loaded:
+`butler-approvals` gates the butler agent's sensitive tool calls behind an approval you grant
+from the Butler app. List the tool names to gate in `sensitiveTools` (supports `*`/`?` globs);
+an empty list gates nothing. `enableTestCommand` adds a `/test-approval` chat command that
+creates a pending approval and waits for your decision — handy for verifying the loop before any
+real sensitive tools exist. With no decision in `timeoutMs`, `timeoutBehavior` decides (default
+`deny`).
+
+Restart and confirm they loaded:
 
 ```powershell
 openclaw gateway restart
-openclaw plugins list   # look for "code-dispatch ... enabled"
+openclaw plugins list   # look for "code-dispatch ... enabled" and "butler-approvals ... enabled"
 ```
 
 ---

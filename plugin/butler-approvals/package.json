@@ -1,0 +1,14 @@
+{
+  "name": "butler-approvals",
+  "version": "1.0.0",
+  "description": "Gate the butler agent's sensitive tool calls behind an approval you grant from the Butler app.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}
