@@ -272,7 +272,12 @@ export default {
 
     // Gate sensitive tool calls. Returning {} lets the tool proceed; returning
     // { block: true } aborts it. We await the decision in between.
-    api.registerHook("before_tool_call", async (event, ctx) => {
+    //
+    // NOTE: this must be registered as a TYPED hook via `api.on(...)`. The legacy
+    // `api.registerHook(...)` path records the hook but does NOT feed the gateway's
+    // before_tool_call runner (which reads the typed-hook registry), so it never
+    // actually gates tool calls. `api.on` pushes into the typed-hook registry.
+    const gateHandler = async (event, ctx) => {
       try {
         if (!isSensitive(event?.toolName, cfg.sensitiveTools)) return;
         const record = createPending({
@@ -290,7 +295,13 @@ export default {
         // Fail safe: if our gating errors, block rather than silently allow.
         return { block: true, blockReason: "Butler approval error" };
       }
-    });
+    };
+    if (typeof api.on === "function") {
+      api.on("before_tool_call", gateHandler);
+    } else if (typeof api.registerHook === "function") {
+      // Older hosts: best-effort fallback (named registration required there).
+      api.registerHook("before_tool_call", gateHandler, { name: "butler-approvals-gate" });
+    }
 
     // HTTP control surface for the Butler apps (gateway token auth).
     // POST /api/v1/approvals  {"action":"list"} | {"action":"decide","id":"...","decision":"allow-once|deny"} | {"action":"history","limit":30}
