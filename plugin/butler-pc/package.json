@@ -1,0 +1,14 @@
+{
+  "name": "butler-pc",
+  "version": "1.0.0",
+  "description": "Run safe, allow-listed quick-actions on this computer (status, disk, lock, open apps, volume).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

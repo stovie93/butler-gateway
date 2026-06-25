@@ -1,0 +1,16 @@
+{
+  "id": "butler-pc",
+  "name": "Butler PC",
+  "description": "Run safe, allow-listed quick-actions on this computer (status, disk, lock, open apps, volume).",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "contracts": {
+    "tools": ["pc_action"]
+  }
+}
