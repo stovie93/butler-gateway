@@ -13,7 +13,8 @@
       "defaultSeverity": { "type": "string", "enum": ["info", "warning", "critical"] },
       "timeoutMs": { "type": "number" },
       "timeoutBehavior": { "type": "string", "enum": ["allow", "deny"] },
-      "enableTestCommand": { "type": "boolean" }
+      "enableTestCommand": { "type": "boolean" },
+      "pcNotify": { "type": "boolean", "description": "Raise a native Windows toast on each pending approval (default true)" }
     }
   }
 }

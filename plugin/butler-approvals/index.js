@@ -1,6 +1,7 @@
 import { writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 // The butler agent's sensitive tool calls are gated here: a before_tool_call hook
 // creates a pending approval, pushes it to the Butler apps over SSE, and BLOCKS the
@@ -21,6 +22,10 @@ const VALID_DECISIONS = ["allow-once", "deny"];
 //   subscribers: Set of (eventName, dataObj) => void      — connected SSE clients
 const waiters = new Map();
 const subscribers = new Set();
+
+// Whether to raise a native PC notification on each pending approval. Captured
+// from config at register() time so the module-level createPending can use it.
+let _pcNotify = true;
 
 function readJson(file) {
   try {
@@ -61,7 +66,44 @@ function loadConfig() {
     timeoutMs: typeof c.timeoutMs === "number" && c.timeoutMs >= 1000 ? c.timeoutMs : 120_000,
     timeoutBehavior: c.timeoutBehavior === "allow" ? "allow" : "deny",
     enableTestCommand: Boolean(c.enableTestCommand),
+    pcNotify: c.pcNotify !== false, // PC toast on by default; set false to silence
   };
+}
+
+// Raise a native Windows toast for a pending approval. Zero dependencies: spawns
+// a hidden PowerShell that builds a WinRT toast. Title/body are passed via env
+// vars (not interpolated into the script) so approval content can't break out of
+// the command. Best-effort and never throws — PC notify is a convenience, not the
+// gate. No-op off Windows.
+function notifyPc(record) {
+  if (process.platform !== "win32") return;
+  const title = "Butler approval";
+  const body = `${record.toolName}${record.argsBrief ? " — " + record.argsBrief : ""}`.slice(0, 240);
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]|Out-Null",
+    "[Windows.UI.Notifications.ToastNotification,Windows.UI.Notifications,ContentType=WindowsRuntime]|Out-Null",
+    "$x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)",
+    "$t=$x.GetElementsByTagName('text')",
+    "$t.Item(0).AppendChild($x.CreateTextNode($env:BUTLER_TOAST_TITLE))|Out-Null",
+    "$t.Item(1).AppendChild($x.CreateTextNode($env:BUTLER_TOAST_BODY))|Out-Null",
+    "$n=[Windows.UI.Notifications.ToastNotification]::new($x)",
+    "$id='{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show($n)",
+  ].join(";");
+  try {
+    const ps = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
+      {
+        env: { ...process.env, BUTLER_TOAST_TITLE: title, BUTLER_TOAST_BODY: body },
+        windowsHide: true,
+        stdio: "ignore",
+      },
+    );
+    ps.on("error", () => {});
+    ps.unref();
+  } catch {}
 }
 
 // ---- pure helpers (unit-tested) -------------------------------------------
@@ -162,6 +204,7 @@ function createPending({ toolName, params, severity, agentId, sessionKey, timeou
   };
   writeJson(recordPath(id), record);
   broadcast("pending", record);
+  if (_pcNotify) notifyPc(record); // PC toast so you see it without the app open
   return record;
 }
 
@@ -266,6 +309,7 @@ export default {
   configSchema: { parse: (value) => value ?? {}, safeParse: (value) => ({ success: true, data: value ?? {} }) },
   register(api) {
     const cfg = loadConfig();
+    _pcNotify = cfg.pcNotify;
     try {
       reconcileAndPrune();
     } catch {}
