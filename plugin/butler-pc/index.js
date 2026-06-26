@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,7 @@ import { join } from "node:path";
 // follow-on via the butler-approvals relay.
 
 const AUDIT_FILE = join(homedir(), ".openclaw", "workspace", "dispatch-audit.log");
+const CONFIG_FILE = join(homedir(), ".openclaw", "openclaw.json");
 
 // Allow-listed launch targets for `open`. Keys are what the user says; values are
 // what Start-Process receives. Restricting to a list keeps `open` from running
@@ -183,6 +184,48 @@ async function runAction(action, arg) {
   return { ok: true, text };
 }
 
+// Read the gateway's loopback auth so we can call our own approvals endpoint.
+function gatewayAuth() {
+  try {
+    let t = readFileSync(CONFIG_FILE, "utf8");
+    if (t.charCodeAt(0) === 0xfeff) t = t.slice(1); // strip UTF-8 BOM
+    const cfg = JSON.parse(t);
+    return { token: cfg?.gateway?.auth?.token ?? null, port: cfg?.gateway?.port ?? 18789 };
+  } catch {
+    return { token: null, port: 18789 };
+  }
+}
+
+// Ask butler-approvals to gate an action (phone card + PC toast), blocking until
+// you decide. Returns true only on explicit approval. Fail closed for power.
+async function requireApproval(toolName, params) {
+  const { token, port } = gatewayAuth();
+  if (!token) return false;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/approvals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: "request", toolName, params }),
+    });
+    const data = await res.json();
+    return data?.decision === "allow-once";
+  } catch {
+    return false;
+  }
+}
+
+// Used by the user-initiated surfaces (HTTP route, /pc command): power actions
+// (except abort) require an approval first; everything else runs directly. The
+// agent tool path is NOT routed here — it's already gated by before_tool_call.
+async function runMaybeGated(action, arg) {
+  const name = String(action ?? "").trim().toLowerCase();
+  if (POWER_NAMES.includes(name) && name !== "abort") {
+    const approved = await requireApproval("pc_power", { action: name });
+    if (!approved) return { ok: true, text: `Denied — not running ${name}.` };
+  }
+  return runAction(name, arg);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -275,7 +318,7 @@ export default {
         if (body.action === "actions") {
           return send(200, { actions: ACTION_NAMES, powerActions: POWER_NAMES, openTargets: Object.keys(OPEN_TARGETS) });
         }
-        const result = await runAction(body.action, body.arg);
+        const result = await runMaybeGated(body.action, body.arg);
         if (!result.ok) return send(400, { error: result.text });
         return send(200, { text: result.text });
       },
@@ -292,7 +335,7 @@ export default {
         if (!action) {
           return { text: `Usage: /pc <action>\nActions: ${[...ACTION_NAMES, ...POWER_NAMES].join(", ")}` };
         }
-        const { text } = await runAction(action, arg);
+        const { text } = await runMaybeGated(action, arg);
         return { text };
       },
     });

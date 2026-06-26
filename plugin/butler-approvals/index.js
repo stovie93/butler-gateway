@@ -383,6 +383,21 @@ export default {
           if (!record) return send(404, { error: "No such approval" });
           return send(200, { ok: true, status: record.status, approval: record });
         }
+        // Reusable approval gate for OTHER surfaces (e.g. the butler-pc HTTP route):
+        // create a pending approval and hold this response open until you decide,
+        // then return the decision. Same path the agent gate uses, so the SSE card,
+        // PC toast, and audit all fire. Lets any plugin require an approval without
+        // owning the approval machinery itself.
+        if (body.action === "request") {
+          const record = createPending({
+            toolName: String(body.toolName ?? "action"),
+            params: body.params && typeof body.params === "object" ? body.params : {},
+            severity: cfg.defaultSeverity,
+            timeoutMs: cfg.timeoutMs,
+          });
+          const decision = await awaitDecision(record, cfg.timeoutMs, cfg.timeoutBehavior);
+          return send(200, { ok: true, id: record.id, decision, status: decisionToStatus(decision) });
+        }
         return send(400, { error: "Unknown action" });
       },
     });
