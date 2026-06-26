@@ -147,14 +147,39 @@ const ACTIONS = {
   },
 };
 
+// Power actions — kept SEPARATE from the safe ACTIONS so they can be gated
+// independently (the pc_power tool is sensitive and routes through the approval
+// relay). shutdown/restart use a 20s grace window so there's always a chance to
+// abort (via /pc abort, the app, or physically at the PC).
+const POWER = {
+  shutdown: async () => {
+    await runPs("shutdown /s /t 20");
+    return "Shutting down in 20s. Send '/pc abort' (or tap Abort) to cancel.";
+  },
+  restart: async () => {
+    await runPs("shutdown /r /t 20");
+    return "Restarting in 20s. Send '/pc abort' (or tap Abort) to cancel.";
+  },
+  abort: async () => {
+    const out = await runPs("shutdown /a");
+    if (/\b1116\b|no shutdown was in progress/i.test(out)) return "No shutdown is scheduled.";
+    return "Shutdown/restart aborted.";
+  },
+};
+const POWER_NAMES = ["shutdown", "restart", "abort"];
+
+// All executable actions (safe + power). The tools expose different subsets, but
+// the HTTP route and /pc command (user-initiated) can run any of them.
+const EXEC = { ...ACTIONS, ...POWER };
+
 // Run one action by name. Returns { ok, text }. Unknown actions are reported.
 async function runAction(action, arg) {
   const name = String(action ?? "").trim().toLowerCase();
-  if (!ACTIONS[name]) {
-    return { ok: false, text: `Unknown action "${name}". Try: ${ACTION_NAMES.join(", ")}.` };
+  if (!EXEC[name]) {
+    return { ok: false, text: `Unknown action "${name}". Try: ${[...ACTION_NAMES, ...POWER_NAMES].join(", ")}.` };
   }
   appendAudit({ action: "pc", name, arg: arg ? String(arg).slice(0, 80) : undefined });
-  const text = await ACTIONS[name](arg);
+  const text = await EXEC[name](arg);
   return { ok: true, text };
 }
 
@@ -167,7 +192,7 @@ function readBody(req) {
   });
 }
 
-export { parsePcArgs, resolveOpenTarget, resolveVolume, ACTION_NAMES, OPEN_TARGETS };
+export { parsePcArgs, resolveOpenTarget, resolveVolume, ACTION_NAMES, POWER_NAMES, OPEN_TARGETS };
 
 export default {
   id: "butler-pc",
@@ -199,6 +224,29 @@ export default {
           return { content: [{ type: "text", text }] };
         },
       });
+
+      // Power actions are a SEPARATE tool so they can be gated on their own. Mark
+      // this tool name in butler-approvals `sensitiveTools` to require an approval
+      // (phone card + PC toast) before the butler can power the machine off.
+      api.registerTool({
+        name: "pc_power",
+        description:
+          "Power-control the user's computer. action: 'shutdown' (turn it off), 'restart' (reboot), or " +
+          "'abort' (cancel a pending shutdown/restart). Shutdown and restart run after a 20-second grace " +
+          "window. This is sensitive — it powers off the machine and cannot be undone remotely.",
+        parameters: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: POWER_NAMES, description: "shutdown, restart, or abort." },
+          },
+          required: ["action"],
+          additionalProperties: false,
+        },
+        async execute(_id, params) {
+          const { text } = await runAction(params?.action);
+          return { content: [{ type: "text", text }] };
+        },
+      });
     }
 
     // Deterministic HTTP entry point for the Butler app's PC screen (gateway auth).
@@ -225,7 +273,7 @@ export default {
           return send(400, { error: "Invalid JSON body" });
         }
         if (body.action === "actions") {
-          return send(200, { actions: ACTION_NAMES, openTargets: Object.keys(OPEN_TARGETS) });
+          return send(200, { actions: ACTION_NAMES, powerActions: POWER_NAMES, openTargets: Object.keys(OPEN_TARGETS) });
         }
         const result = await runAction(body.action, body.arg);
         if (!result.ok) return send(400, { error: result.text });
@@ -236,12 +284,13 @@ export default {
     // Typed chat command, consistent with /build and /jobs: "/pc <action> [arg]".
     api.registerCommand({
       name: "pc",
-      description: "Run a PC quick-action: /pc <status|disk|battery|processes|lock|open <app>|volume <up|down|mute>>",
+      description:
+        "Run a PC quick-action: /pc <status|disk|battery|processes|lock|open <app>|volume <up|down|mute>|shutdown|restart|abort>",
       acceptsArgs: true,
       handler: async (ctx) => {
         const { action, arg } = parsePcArgs(ctx.args);
         if (!action) {
-          return { text: `Usage: /pc <action>\nActions: ${ACTION_NAMES.join(", ")}` };
+          return { text: `Usage: /pc <action>\nActions: ${[...ACTION_NAMES, ...POWER_NAMES].join(", ")}` };
         }
         const { text } = await runAction(action, arg);
         return { text };

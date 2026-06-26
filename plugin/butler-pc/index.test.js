@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parsePcArgs, resolveOpenTarget, resolveVolume, ACTION_NAMES, OPEN_TARGETS } from "./index.js";
+import { parsePcArgs, resolveOpenTarget, resolveVolume, ACTION_NAMES, POWER_NAMES, OPEN_TARGETS } from "./index.js";
 
 test("parsePcArgs splits action and arg, lowercasing the action", () => {
   assert.deepEqual(parsePcArgs("disk"), { action: "disk", arg: "" });
@@ -36,4 +36,10 @@ test("ACTION_NAMES are unique and the open allow-list is non-empty", () => {
   assert.ok(ACTION_NAMES.includes("status"));
   assert.ok(ACTION_NAMES.includes("lock"));
   assert.ok(Object.keys(OPEN_TARGETS).length > 0);
+});
+
+test("POWER_NAMES are separate from the safe ACTION_NAMES", () => {
+  assert.deepEqual(POWER_NAMES, ["shutdown", "restart", "abort"]);
+  // Power actions must NOT leak into the un-gated safe set.
+  for (const p of POWER_NAMES) assert.ok(!ACTION_NAMES.includes(p), `${p} should not be a safe action`);
 });

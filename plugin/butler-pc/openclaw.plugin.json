@@ -11,6 +11,6 @@
     "properties": {}
   },
   "contracts": {
-    "tools": ["pc_action"]
+    "tools": ["pc_action", "pc_power"]
   }
 }
