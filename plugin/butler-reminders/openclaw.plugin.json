@@ -1,0 +1,29 @@
+{
+  "id": "butler-reminders",
+  "name": "Butler Reminders",
+  "description": "Set plain-language reminders that fire a PC toast and/or a WhatsApp message when due.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pcNotify": {
+        "type": "boolean",
+        "description": "Raise a native Windows toast when a reminder fires. Default true."
+      },
+      "whatsappNotify": {
+        "type": "boolean",
+        "description": "Send a WhatsApp message when a reminder fires (requires whatsappTarget). Default true when a target is set."
+      },
+      "whatsappTarget": {
+        "type": "string",
+        "description": "WhatsApp recipient (e.g. +14359942435) for reminder messages. No target = WhatsApp disabled."
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["set_reminder", "list_reminders", "cancel_reminder"]
+  }
+}
