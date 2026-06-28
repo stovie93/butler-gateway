@@ -14,7 +14,15 @@
       "timeoutMs": { "type": "number" },
       "timeoutBehavior": { "type": "string", "enum": ["allow", "deny"] },
       "enableTestCommand": { "type": "boolean" },
-      "pcNotify": { "type": "boolean", "description": "Raise a native Windows toast on each pending approval (default true)" }
+      "pcNotify": { "type": "boolean", "description": "Raise a native Windows toast on each pending approval (default true)" },
+      "fcm": {
+        "type": "object",
+        "description": "FCM push so a pending approval reaches a phone with the app closed. Omit to disable.",
+        "properties": {
+          "projectId": { "type": "string", "description": "Firebase project id." },
+          "serviceAccountPath": { "type": "string", "description": "Path to the service-account JSON (kept off git)." }
+        }
+      }
     }
   }
 }

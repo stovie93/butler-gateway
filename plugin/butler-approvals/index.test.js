@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { globToRegExp, isSensitive, isValidDecision, decisionToStatus, argsBrief } from "./index.js";
+import { globToRegExp, isSensitive, isValidDecision, decisionToStatus, argsBrief, buildJwtClaims } from "./index.js";
 
 test("globToRegExp matches literals, *, and ?", () => {
   assert.ok(globToRegExp("trade_stock").test("trade_stock"));
@@ -46,4 +46,14 @@ test("argsBrief picks a field, stringifies, and truncates", () => {
   const out = argsBrief({ summary: long });
   assert.equal(out.length, 201); // 200 + ellipsis
   assert.ok(out.endsWith("…"));
+});
+
+test("buildJwtClaims builds the FCM service-account assertion claims", () => {
+  const sa = { client_email: "butler@proj.iam.gserviceaccount.com" };
+  const claims = buildJwtClaims(sa, 1000);
+  assert.equal(claims.iss, "butler@proj.iam.gserviceaccount.com");
+  assert.equal(claims.aud, "https://oauth2.googleapis.com/token");
+  assert.equal(claims.scope, "https://www.googleapis.com/auth/firebase.messaging");
+  assert.equal(claims.iat, 1000);
+  assert.equal(claims.exp, 1000 + 3600); // 1h lifetime
 });

@@ -2,6 +2,7 @@ import { writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, exist
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { createSign } from "node:crypto";
 
 // The butler agent's sensitive tool calls are gated here: a before_tool_call hook
 // creates a pending approval, pushes it to the Butler apps over SSE, and BLOCKS the
@@ -13,6 +14,7 @@ const WORKSPACE = join(HOME, ".openclaw", "workspace");
 const APPROVALS_DIR = join(WORKSPACE, "approvals");
 const AUDIT_FILE = join(WORKSPACE, "dispatch-audit.log");
 const CONFIG_FILE = join(HOME, ".openclaw", "openclaw.json");
+const PUSH_TOKENS_FILE = join(WORKSPACE, "push-tokens.json");
 
 const TERMINAL = ["allowed", "denied", "expired"];
 const VALID_DECISIONS = ["allow-once", "deny"];
@@ -26,6 +28,13 @@ const subscribers = new Set();
 // Whether to raise a native PC notification on each pending approval. Captured
 // from config at register() time so the module-level createPending can use it.
 let _pcNotify = true;
+
+// FCM push config { projectId, serviceAccountPath } or null (push disabled).
+// Captured at register() time. Lets a pending approval reach a phone whose app
+// is fully closed (the PC toast + in-app SSE only reach you at the PC / with the
+// app open). Cached OAuth access token: { value, exp } (exp = epoch seconds).
+let _fcm = null;
+let _fcmToken = { value: null, exp: 0 };
 
 function readJson(file) {
   try {
@@ -67,6 +76,12 @@ function loadConfig() {
     timeoutBehavior: c.timeoutBehavior === "allow" ? "allow" : "deny",
     enableTestCommand: Boolean(c.enableTestCommand),
     pcNotify: c.pcNotify !== false, // PC toast on by default; set false to silence
+    // FCM push: enabled only when both fields are present (and the SA file exists,
+    // checked lazily at send time). Absent → push silently disabled.
+    fcm:
+      c.fcm && typeof c.fcm === "object" && c.fcm.projectId && c.fcm.serviceAccountPath
+        ? { projectId: String(c.fcm.projectId), serviceAccountPath: String(c.fcm.serviceAccountPath) }
+        : null,
   };
 }
 
@@ -104,6 +119,137 @@ function notifyPc(record) {
     ps.on("error", () => {});
     ps.unref();
   } catch {}
+}
+
+// ---- push tokens + FCM v1 sender -------------------------------------------
+// File-backed device token store. Each entry: { token, platform, registeredAt,
+// lastSeen }. Deduped by token. The Butler app registers its FCM token here.
+
+function loadTokens() {
+  const data = readJson(PUSH_TOKENS_FILE);
+  return Array.isArray(data) ? data : [];
+}
+
+function saveTokens(tokens) {
+  try {
+    writeJson(PUSH_TOKENS_FILE, tokens);
+  } catch {}
+}
+
+function upsertToken(token, platform) {
+  if (!token) return;
+  const tokens = loadTokens();
+  const now = new Date().toISOString();
+  const existing = tokens.find((t) => t.token === token);
+  if (existing) {
+    existing.lastSeen = now;
+    if (platform) existing.platform = platform;
+  } else {
+    tokens.push({ token, platform: platform || "android", registeredAt: now, lastSeen: now });
+  }
+  saveTokens(tokens);
+}
+
+function removeToken(token) {
+  const tokens = loadTokens();
+  const filtered = tokens.filter((t) => t.token !== token);
+  if (filtered.length !== tokens.length) saveTokens(filtered);
+}
+
+function base64url(input) {
+  return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Pure: the signed JWT claim set for the FCM service-account OAuth exchange.
+// Exported for tests (keeps network out of the unit tests).
+function buildJwtClaims(sa, now = Math.floor(Date.now() / 1000)) {
+  return {
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  };
+}
+
+// Mint (and cache) an OAuth access token from the service-account key via the
+// JWT-bearer grant. Returns null on any failure (push then no-ops). Cached until
+// ~5 min before expiry. Uses Node crypto for RS256 — no deps.
+async function getFcmAccessToken() {
+  if (!_fcm) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (_fcmToken.value && _fcmToken.exp - 300 > now) return _fcmToken.value;
+
+  let sa;
+  try {
+    sa = JSON.parse(readFileSync(_fcm.serviceAccountPath, "utf8"));
+  } catch {
+    return null; // SA file missing/unreadable → push disabled
+  }
+  if (!sa.client_email || !sa.private_key) return null;
+
+  const signingInput =
+    base64url(JSON.stringify({ alg: "RS256", typ: "JWT" })) + "." + base64url(JSON.stringify(buildJwtClaims(sa, now)));
+  let jwt;
+  try {
+    const signer = createSign("RSA-SHA256");
+    signer.update(signingInput);
+    jwt = signingInput + "." + base64url(signer.sign(sa.private_key));
+  } catch {
+    return null;
+  }
+
+  try {
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body:
+        "grant_type=" +
+        encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
+        "&assertion=" +
+        encodeURIComponent(jwt),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.access_token) return null;
+    _fcmToken = { value: data.access_token, exp: now + (Number(data.expires_in) || 3600) };
+    return _fcmToken.value;
+  } catch {
+    return null;
+  }
+}
+
+// Push a pending approval to every registered device. Best-effort; never throws.
+// Dead tokens (UNREGISTERED / invalid → 404/400) are pruned so the store stays
+// clean. Tapping the notification opens the app on the Approvals tab (data.type).
+async function sendApprovalPush(record) {
+  if (!_fcm?.projectId) return;
+  const tokens = loadTokens();
+  if (!tokens.length) return;
+  const accessToken = await getFcmAccessToken();
+  if (!accessToken) return;
+
+  const title = "🛡️ Butler approval";
+  const body = `${record.toolName}${record.argsBrief ? " — " + record.argsBrief : ""}`.slice(0, 240);
+  const url = `https://fcm.googleapis.com/v1/projects/${_fcm.projectId}/messages:send`;
+
+  for (const t of tokens) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            token: t.token,
+            notification: { title, body },
+            data: { type: "approval", approvalId: String(record.id) },
+            android: { priority: "high", notification: { channel_id: "approvals" } },
+          },
+        }),
+      });
+      if (res.status === 404 || res.status === 400) removeToken(t.token);
+    } catch {}
+  }
 }
 
 // ---- pure helpers (unit-tested) -------------------------------------------
@@ -205,6 +351,7 @@ function createPending({ toolName, params, severity, agentId, sessionKey, timeou
   writeJson(recordPath(id), record);
   broadcast("pending", record);
   if (_pcNotify) notifyPc(record); // PC toast so you see it without the app open
+  sendApprovalPush(record).catch(() => {}); // phone push (reaches a closed app)
   return record;
 }
 
@@ -299,7 +446,7 @@ function readBody(req) {
   });
 }
 
-export { globToRegExp, isSensitive, isValidDecision, decisionToStatus, argsBrief };
+export { globToRegExp, isSensitive, isValidDecision, decisionToStatus, argsBrief, buildJwtClaims };
 
 export default {
   id: "butler-approvals",
@@ -310,6 +457,7 @@ export default {
   register(api) {
     const cfg = loadConfig();
     _pcNotify = cfg.pcNotify;
+    _fcm = cfg.fcm;
     try {
       reconcileAndPrune();
     } catch {}
@@ -375,6 +523,18 @@ export default {
         }
         if (body.action === "history") {
           return send(200, { approvals: listRecent(typeof body.limit === "number" ? body.limit : 30) });
+        }
+        // Device push-token registration from the Butler app (so a pending
+        // approval can reach a phone whose app is closed).
+        if (body.action === "register-push") {
+          if (!body.token) return send(400, { error: "Need token" });
+          upsertToken(String(body.token), body.platform ? String(body.platform) : "android");
+          return send(200, { ok: true });
+        }
+        if (body.action === "unregister-push") {
+          if (!body.token) return send(400, { error: "Need token" });
+          removeToken(String(body.token));
+          return send(200, { ok: true });
         }
         if (body.action === "decide") {
           if (!body.id) return send(400, { error: "Need id" });
