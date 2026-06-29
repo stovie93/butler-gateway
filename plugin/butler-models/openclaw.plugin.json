@@ -1,0 +1,13 @@
+{
+  "id": "butler-models",
+  "name": "Butler Models",
+  "description": "Lists the chat models the butler can use, for the app's model picker.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
