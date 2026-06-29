@@ -222,16 +222,20 @@ async function getFcmAccessToken() {
 // Push a pending approval to every registered device. Best-effort; never throws.
 // Dead tokens (UNREGISTERED / invalid → 404/400) are pruned so the store stays
 // clean. Tapping the notification opens the app on the Approvals tab (data.type).
-async function sendApprovalPush(record) {
+// Generic phone push to every registered device. Best-effort; never throws.
+// channelId must be an Android channel the app created (approvals | reminders).
+// Reusable "notify my phone" primitive — used for approvals and, via the
+// /api/v1/notify endpoint, for build-completion and other one-off notifications.
+async function sendPush(title, body, data = {}, channelId = "approvals") {
   if (!_fcm?.projectId) return;
   const tokens = loadTokens();
   if (!tokens.length) return;
   const accessToken = await getFcmAccessToken();
   if (!accessToken) return;
 
-  const title = "🛡️ Butler approval";
-  const body = `${record.toolName}${record.argsBrief ? " — " + record.argsBrief : ""}`.slice(0, 240);
   const url = `https://fcm.googleapis.com/v1/projects/${_fcm.projectId}/messages:send`;
+  const strData = {};
+  for (const [k, v] of Object.entries(data)) strData[k] = String(v); // FCM data must be strings
 
   for (const t of tokens) {
     try {
@@ -241,15 +245,20 @@ async function sendApprovalPush(record) {
         body: JSON.stringify({
           message: {
             token: t.token,
-            notification: { title, body },
-            data: { type: "approval", approvalId: String(record.id) },
-            android: { priority: "high", notification: { channel_id: "approvals" } },
+            notification: { title: String(title).slice(0, 120), body: String(body).slice(0, 240) },
+            data: strData,
+            android: { priority: "high", notification: { channel_id: channelId } },
           },
         }),
       });
       if (res.status === 404 || res.status === 400) removeToken(t.token);
     } catch {}
   }
+}
+
+async function sendApprovalPush(record) {
+  const body = `${record.toolName}${record.argsBrief ? " — " + record.argsBrief : ""}`;
+  await sendPush("🛡️ Butler approval", body, { type: "approval", approvalId: String(record.id) }, "approvals");
 }
 
 // ---- pure helpers (unit-tested) -------------------------------------------
@@ -534,6 +543,16 @@ export default {
         if (body.action === "unregister-push") {
           if (!body.token) return send(400, { error: "Need token" });
           removeToken(String(body.token));
+          return send(200, { ok: true });
+        }
+        // Generic "notify my phone" — a reusable push for any surface (e.g. the
+        // build runner pings this when a Claude Code job finishes). Fire-and-forget.
+        if (body.action === "notify") {
+          const title = String(body.title ?? "Butler");
+          const text = String(body.body ?? "");
+          const channel = body.channel === "reminders" ? "reminders" : "approvals";
+          const data = body.data && typeof body.data === "object" ? body.data : { type: "info" };
+          sendPush(title, text, data, channel).catch(() => {});
           return send(200, { ok: true });
         }
         if (body.action === "decide") {
