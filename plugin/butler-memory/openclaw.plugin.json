@@ -1,0 +1,21 @@
+{
+  "id": "butler-memory",
+  "name": "Butler Memory",
+  "description": "A curated, durable memory of the user — remembered facts are stored as indexed notes and recalled in conversation.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "reindexOnWrite": {
+        "type": "boolean",
+        "description": "Reindex the memory vector store after a memory is added or removed, so it's recallable in chat immediately. Default true."
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["remember", "recall", "forget"]
+  }
+}
