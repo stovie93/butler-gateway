@@ -307,9 +307,11 @@ export default {
       api.registerTool({
         name: "remember",
         description:
-          "Save a durable fact about the user for later. Use this whenever the user shares something " +
-          "personal, a preference, an ongoing project, a goal, or anything worth remembering across " +
-          "conversations. Store one clear fact per call, written as a short standalone statement.",
+          "Save a durable FACT about the user to long-term memory (e.g. a preference, a personal " +
+          "detail, an ongoing project, a goal). This is NOT a timed reminder/alarm — for anything " +
+          "with a time ('remind me at 6pm', 'in 2 hours') use set_reminder instead. Use remember " +
+          "when the user says 'remember that…', 'note that…', or shares a lasting fact about " +
+          "themselves. Store one clear fact per call as a short standalone statement.",
         parameters: {
           type: "object",
           properties: {

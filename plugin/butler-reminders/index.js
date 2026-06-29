@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createSign } from "node:crypto";
 
 // Butler reminders: set a nudge in plain language ("remind me to call mum in 2
 // hours", "at 6pm", "tomorrow at 9am"). It's parsed, persisted to disk, and a
@@ -16,6 +17,9 @@ const WORKSPACE = join(HOME, ".openclaw", "workspace");
 const REMINDERS_DIR = join(WORKSPACE, "reminders");
 const AUDIT_FILE = join(WORKSPACE, "dispatch-audit.log");
 const CONFIG_FILE = join(HOME, ".openclaw", "openclaw.json");
+// Device push tokens registered by the Butler app (via butler-approvals). We
+// only read this to push fired reminders to the phone — no registration here.
+const PUSH_TOKENS_FILE = join(WORKSPACE, "push-tokens.json");
 
 // A single sweep interval (started at load time) fires any due reminders. One
 // load-time timer beats per-reminder setTimeouts: it survives restarts (overdue
@@ -25,7 +29,10 @@ const SWEEP_MS = 10_000;
 let sweepTimer = null;
 
 // Config captured at register() time so module-level fire/deliver can use it.
-let _cfg = { pcNotify: true, whatsappNotify: false, whatsappTarget: "" };
+let _cfg = { pcNotify: true, whatsappNotify: false, whatsappTarget: "", pushNotify: false, fcm: null };
+
+// Cached FCM OAuth access token (minted from the service-account key).
+let _fcmToken = { value: null, exp: 0 };
 
 // ---- store helpers ---------------------------------------------------------
 
@@ -61,11 +68,18 @@ function loadConfig() {
   const root = readJson(CONFIG_FILE) ?? {};
   const c = root?.plugins?.entries?.["butler-reminders"]?.config ?? {};
   const whatsappTarget = typeof c.whatsappTarget === "string" ? c.whatsappTarget.trim() : "";
+  const fcm =
+    c.fcm && typeof c.fcm === "object" && c.fcm.projectId && c.fcm.serviceAccountPath
+      ? { projectId: String(c.fcm.projectId), serviceAccountPath: String(c.fcm.serviceAccountPath) }
+      : null;
   return {
     pcNotify: c.pcNotify !== false, // PC toast on by default
-    // WhatsApp on by default *when* a target is configured (no target = no send).
-    whatsappNotify: c.whatsappNotify !== false && Boolean(whatsappTarget),
+    // WhatsApp only when a target is configured AND not explicitly disabled.
+    whatsappNotify: c.whatsappNotify === true && Boolean(whatsappTarget),
     whatsappTarget,
+    // Phone push on by default *when* FCM is configured (the app-first path).
+    pushNotify: c.pushNotify !== false && Boolean(fcm),
+    fcm,
   };
 }
 
@@ -266,9 +280,125 @@ function sendWhatsApp(message) {
   } catch {}
 }
 
+// ---- FCM push (phone notification, reaches a fully-closed app) -------------
+// Reuses the device-token store the Butler app registers via butler-approvals
+// (~/.openclaw/workspace/push-tokens.json) — reminders only read it. Node crypto
+// only (RS256 JWT → OAuth token → FCM v1 send). Best-effort; never throws.
+
+function loadTokens() {
+  const data = readJson(PUSH_TOKENS_FILE);
+  return Array.isArray(data) ? data : [];
+}
+
+function removeToken(token) {
+  const tokens = loadTokens();
+  const filtered = tokens.filter((t) => t.token !== token);
+  if (filtered.length !== tokens.length) {
+    try {
+      writeJson(PUSH_TOKENS_FILE, filtered);
+    } catch {}
+  }
+}
+
+function base64url(input) {
+  return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Pure: the signed JWT claim set for the FCM service-account OAuth exchange.
+function buildJwtClaims(sa, now = Math.floor(Date.now() / 1000)) {
+  return {
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  };
+}
+
+// Mint (and cache ~55 min) an OAuth access token from the service-account key.
+// Returns null on any failure (push then no-ops).
+async function getFcmAccessToken() {
+  const fcm = _cfg.fcm;
+  if (!fcm) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (_fcmToken.value && _fcmToken.exp - 300 > now) return _fcmToken.value;
+
+  let sa;
+  try {
+    sa = JSON.parse(readFileSync(fcm.serviceAccountPath, "utf8"));
+  } catch {
+    return null; // SA file missing/unreadable → push disabled
+  }
+  if (!sa.client_email || !sa.private_key) return null;
+
+  const signingInput =
+    base64url(JSON.stringify({ alg: "RS256", typ: "JWT" })) + "." + base64url(JSON.stringify(buildJwtClaims(sa, now)));
+  let jwt;
+  try {
+    const signer = createSign("RSA-SHA256");
+    signer.update(signingInput);
+    jwt = signingInput + "." + base64url(signer.sign(sa.private_key));
+  } catch {
+    return null;
+  }
+
+  try {
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body:
+        "grant_type=" +
+        encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") +
+        "&assertion=" +
+        encodeURIComponent(jwt),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.access_token) return null;
+    _fcmToken = { value: data.access_token, exp: now + (Number(data.expires_in) || 3600) };
+    return _fcmToken.value;
+  } catch {
+    return null;
+  }
+}
+
+// Push a fired reminder to every registered device. Tapping opens the Remind
+// tab (data.type=reminder). Dead tokens pruned on 404/400. Never throws.
+async function sendReminderPush(record) {
+  const fcm = _cfg.fcm;
+  if (!fcm?.projectId) return;
+  const tokens = loadTokens();
+  if (!tokens.length) return;
+  const accessToken = await getFcmAccessToken();
+  if (!accessToken) return;
+
+  const title = "⏰ Reminder";
+  const body = String(record.text).slice(0, 240);
+  const url = `https://fcm.googleapis.com/v1/projects/${fcm.projectId}/messages:send`;
+
+  for (const t of tokens) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            token: t.token,
+            notification: { title, body },
+            data: { type: "reminder", reminderId: String(record.id) },
+            android: { priority: "high", notification: { channel_id: "reminders" } },
+          },
+        }),
+      });
+      if (res.status === 404 || res.status === 400) removeToken(t.token);
+    } catch {}
+  }
+}
+
 function deliver(record) {
   if (_cfg.pcNotify) notifyPc("Butler reminder", record.text);
-  if (_cfg.whatsappNotify) sendWhatsApp(`⏰ Reminder: ${record.text}`);
+  if (_cfg.pushNotify) sendReminderPush(record).catch(() => {});
+  if (_cfg.whatsappNotify) sendWhatsApp(`Reminder: ${record.text}`);
 }
 
 // ---- scheduler -------------------------------------------------------------
@@ -394,7 +524,7 @@ function readBody(req) {
   });
 }
 
-export { parseWhen, parseClock, nextOccurrence, extractReminder, relativeLabel };
+export { parseWhen, parseClock, nextOccurrence, extractReminder, relativeLabel, buildJwtClaims };
 
 export default {
   id: "butler-reminders",

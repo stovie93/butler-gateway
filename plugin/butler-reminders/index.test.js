@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseWhen, parseClock, nextOccurrence, extractReminder, relativeLabel } from "./index.js";
+import { parseWhen, parseClock, nextOccurrence, extractReminder, relativeLabel, buildJwtClaims } from "./index.js";
 
 // Fixed reference point: Mon 2026-06-29 10:00:00 local.
 const NOW = new Date(2026, 5, 29, 10, 0, 0, 0).getTime();
@@ -59,6 +59,15 @@ test("extractReminder sniffs a time phrase out of a sentence", () => {
   assert.deepEqual(extractReminder("me to call mum at 6pm"), { when: "at 6pm", text: "call mum" });
   assert.deepEqual(extractReminder("water the plants tomorrow at 9am"), { when: "tomorrow at 9am", text: "water the plants" });
   assert.deepEqual(extractReminder("just text"), { when: "", text: "just text" });
+});
+
+test("buildJwtClaims builds the FCM service-account assertion", () => {
+  const claims = buildJwtClaims({ client_email: "svc@proj.iam.gserviceaccount.com" }, 1_000_000);
+  assert.equal(claims.iss, "svc@proj.iam.gserviceaccount.com");
+  assert.equal(claims.scope, "https://www.googleapis.com/auth/firebase.messaging");
+  assert.equal(claims.aud, "https://oauth2.googleapis.com/token");
+  assert.equal(claims.iat, 1_000_000);
+  assert.equal(claims.exp, 1_000_000 + 3600);
 });
 
 test("relativeLabel produces a short human label", () => {

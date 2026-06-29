@@ -13,9 +13,21 @@
         "type": "boolean",
         "description": "Raise a native Windows toast when a reminder fires. Default true."
       },
+      "pushNotify": {
+        "type": "boolean",
+        "description": "Send a phone push notification when a reminder fires (requires fcm). Default true when fcm is configured."
+      },
+      "fcm": {
+        "type": "object",
+        "description": "Firebase Cloud Messaging config for phone push. Reuses the same project + service account as butler-approvals.",
+        "properties": {
+          "projectId": { "type": "string", "description": "Firebase project id." },
+          "serviceAccountPath": { "type": "string", "description": "Path to the Firebase service-account JSON key." }
+        }
+      },
       "whatsappNotify": {
         "type": "boolean",
-        "description": "Send a WhatsApp message when a reminder fires (requires whatsappTarget). Default true when a target is set."
+        "description": "Also send a WhatsApp message when a reminder fires (requires whatsappTarget). Default false (opt-in; the app-first path uses push)."
       },
       "whatsappTarget": {
         "type": "string",
