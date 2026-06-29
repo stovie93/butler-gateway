@@ -1,0 +1,13 @@
+{
+  "id": "butler-persona",
+  "name": "Butler Persona",
+  "description": "The identity you set for your butler (name, vibe, personality) — rendered into the injected IDENTITY.md.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
