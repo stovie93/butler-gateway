@@ -1,6 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { newId, serializeMemory, parseMemory, matchId } from "./index.js";
+import { newId, serializeMemory, parseMemory, matchId, extractCaptureFact } from "./index.js";
+
+test("extractCaptureFact catches explicit remember intents", () => {
+  assert.equal(extractCaptureFact("Please remember that my cat is named Pixel."), "My cat is named Pixel.");
+  assert.equal(extractCaptureFact("remember my anniversary is June 5"), "My anniversary is June 5");
+  assert.equal(extractCaptureFact("note that I work night shifts"), "I work night shifts");
+  assert.equal(extractCaptureFact("don't forget I'm allergic to peanuts"), "I'm allergic to peanuts");
+  assert.equal(extractCaptureFact("keep in mind I prefer dark mode"), "I prefer dark mode");
+});
+
+test("extractCaptureFact ignores recall questions and non-triggers", () => {
+  assert.equal(extractCaptureFact("do you remember my cat's name?"), null);
+  assert.equal(extractCaptureFact("what do you remember about me?"), null);
+  assert.equal(extractCaptureFact("my cat is named Pixel"), null); // no trigger word
+  assert.equal(extractCaptureFact(""), null);
+});
+
+test("extractCaptureFact skips timed reminders and todos", () => {
+  assert.equal(extractCaptureFact("remember to call mum in 2 hours"), null);
+  assert.equal(extractCaptureFact("remind me at 6pm to take out the bins"), null);
+  assert.equal(extractCaptureFact("don't forget to buy milk"), null); // imperative todo
+  assert.equal(extractCaptureFact("remember the meeting is tomorrow"), null); // timed
+});
 
 test("newId is sortable and chronological", () => {
   const a = newId();

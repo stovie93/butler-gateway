@@ -138,6 +138,40 @@ function matchId(memories, key) {
   return { record: matches[0] };
 }
 
+// ---- guaranteed capture (deterministic, harness-side) ----------------------
+
+// A weak local model frequently FAILS to call the `remember` tool even when
+// Jordan explicitly asks it to ("remember that my cat is Pixel"). So we also
+// catch the obvious "save this" intents deterministically in the prompt hook
+// and guarantee the write — the same "harness acts, model just talks" pattern
+// the rest of the butler leans on. Conservative on purpose: only fires on an
+// explicit trigger, skips questions, and skips timed/imperative items (those
+// are reminders or todos, not durable facts).
+const CAPTURE_TRIGGER = /\b(remember|note this|note that|make a note|don'?t forget|keep in mind|for (?:future|the) (?:reference|record))\b/i;
+const QUESTION_LEAD = /^\s*(?:do|does|did|can|could|will|would|what|what'?s|whats|who|when|where|why|how)\b/i;
+const TIMED_HINT = /\b(?:at \d|in \d+\s*(?:s|sec|secs|min|mins|minute|minutes|hour|hours|hr|hrs|day|days|week|weeks)|tomorrow|tonight|today|this (?:morning|afternoon|evening)|o'?clock|\d\s*(?:am|pm))\b/i;
+
+// Pull a durable fact out of an explicit "remember …" message, or null if the
+// message isn't a clear capture intent. Pure + unit-tested.
+function extractCaptureFact(prompt) {
+  const raw = String(prompt ?? "").replace(/\s+/g, " ").trim();
+  if (!raw || !CAPTURE_TRIGGER.test(raw)) return null;
+  // "do you remember my cat's name?" is recall, not capture.
+  if (raw.includes("?") || QUESTION_LEAD.test(raw)) return null;
+
+  let t = raw.replace(/^please\s+/i, "");
+  // Strip the leading intent phrase but NOT a trailing "to" — leaving it lets
+  // the imperative-todo guard below catch "remember TO call mum".
+  t = t.replace(/^(?:remember|note this|note that|make a note|keep in mind)(?:\s+(?:that|this))?\s*[:,-]?\s*/i, "");
+  t = t.replace(/^don'?t forget(?:\s+that)?\s*[:,-]?\s*/i, "");
+  t = t.replace(/^for (?:future|the) (?:reference|record)\s*[:,-]?\s*/i, "");
+  t = t.trim();
+  if (t.length < 3 || t.length > 400) return null;
+  if (TIMED_HINT.test(t)) return null; // a reminder, handled elsewhere
+  if (/^to\s+\w/i.test(t)) return null; // "remember to call mum" → a todo
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 // ---- CLI bridge (reindex + semantic search) --------------------------------
 
 // Resolve the OpenClaw CLI's JS entry so we can run it via `node` directly
@@ -291,7 +325,7 @@ function readBody(req) {
   });
 }
 
-export { newId, serializeMemory, parseMemory, matchId };
+export { newId, serializeMemory, parseMemory, matchId, extractCaptureFact };
 
 export default {
   id: "butler-memory",
@@ -300,6 +334,30 @@ export default {
   configSchema: { parse: (value) => value ?? {}, safeParse: (value) => ({ success: true, data: value ?? {} }) },
   register(api) {
     _cfg = loadConfig();
+
+    // Guaranteed capture: when Jordan explicitly asks to remember a fact, save
+    // it deterministically even if the model never calls the `remember` tool.
+    // Runs on every prompt build; the trigger regex short-circuits instantly for
+    // ordinary messages, so it's effectively free when there's nothing to catch.
+    if (typeof api.on === "function") {
+      const captureCache = new Map(); // fact-key -> ts, dedupe across a turn's calls
+      api.on("before_prompt_build", async (event) => {
+        try {
+          const fact = extractCaptureFact(event?.prompt);
+          if (!fact) return;
+          const key = fact.toLowerCase().slice(0, 80);
+          const now = Date.now();
+          const seen = captureCache.get(key);
+          if (seen && now - seen < 120_000) return; // already handled this turn
+          captureCache.set(key, now);
+          if (captureCache.size > 200) captureCache.clear();
+          // Don't duplicate a fact we already hold (the model may also save it).
+          const dup = listMemories().some((m) => m.text.toLowerCase().slice(0, 80) === key);
+          if (!dup) addMemory(fact, { source: "jordan", tags: ["auto"] });
+        } catch {}
+        // Side-effect only — never alters the prompt.
+      });
+    }
 
     if (typeof api.registerTool === "function") {
       // The butler calls this on its own when Jordan shares something worth
