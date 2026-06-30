@@ -20,6 +20,7 @@ const CONFIG_FILE = join(HOME, ".openclaw", "openclaw.json");
 // Device push tokens registered by the Butler app (via butler-approvals). We
 // only read this to push fired reminders to the phone — no registration here.
 const PUSH_TOKENS_FILE = join(WORKSPACE, "push-tokens.json");
+const NOTIFICATIONS_FILE = join(WORKSPACE, "notifications.jsonl");
 
 // A single sweep interval (started at load time) fires any due reminders. One
 // load-time timer beats per-reminder setTimeouts: it survives restarts (overdue
@@ -365,6 +366,10 @@ async function getFcmAccessToken() {
 // Push a fired reminder to every registered device. Tapping opens the Remind
 // tab (data.type=reminder). Dead tokens pruned on 404/400. Never throws.
 async function sendReminderPush(record) {
+  try {
+    const line = JSON.stringify({ ts: new Date().toISOString(), type: "reminder", title: "⏰ Reminder", body: String(record.text || "") });
+    appendFileSync(NOTIFICATIONS_FILE, line + "\n", "utf8");
+  } catch {}
   const fcm = _cfg.fcm;
   if (!fcm?.projectId) return;
   const tokens = loadTokens();
