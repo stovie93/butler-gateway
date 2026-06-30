@@ -302,6 +302,77 @@ export default {
       pruneJobs();
     } catch {}
 
+    // Agent-callable build tool. This is what makes building conversational: when
+    // Jordan describes something to build in chat, the model calls this and the
+    // butler-approvals gate turns it into a "confirm on your phone" card before
+    // anything runs (build_project is listed in that plugin's sensitiveTools).
+    if (typeof api.registerTool === "function") {
+      api.registerTool({
+        name: "build_project",
+        description:
+          "Dispatch a coding task to Claude Code running on Jordan's PC. Use this whenever Jordan asks " +
+          "you to build, make, create, code, implement, or set up any software — an app, script, website, " +
+          "game, CLI tool, or automation (e.g. 'build me a snake game', 'make a script that renames files', " +
+          "'create a landing page for…'). Don't explain how he could do it himself and don't interrogate " +
+          "him with lots of questions first — once the request is clear enough to start, call this. If he " +
+          "didn't name the project, pick a short kebab-case name from what he described. Jordan gets a " +
+          "confirmation prompt before any code runs, so it's safe to call as soon as intent is clear.",
+        parameters: {
+          type: "object",
+          properties: {
+            project: {
+              type: "string",
+              description: "Short kebab-case project/folder name, e.g. 'snake-game'. Infer one if not given.",
+            },
+            task: {
+              type: "string",
+              description: "What to build, in plain English — include all the detail Jordan provided.",
+            },
+            continueSession: {
+              type: "boolean",
+              description: "True to resume this project's previous Claude Code session instead of starting fresh.",
+            },
+          },
+          required: ["project", "task"],
+          additionalProperties: false,
+        },
+        async execute(_id, params) {
+          const project = String(params?.project ?? "").trim();
+          const task = String(params?.task ?? "").trim();
+          if (!project || !task) {
+            return { content: [{ type: "text", text: "I need both a project name and a description of what to build." }] };
+          }
+          appendAudit({ action: "build", source: "tool", project, task });
+          const text = await runBuild({ project, task, continueSession: Boolean(params?.continueSession) });
+          return { content: [{ type: "text", text }] };
+        },
+      });
+    }
+
+    // Build-request protocol. Clawdia is local-first and free: she can build small
+    // things herself with her own tools. Claude Code (installed on the PC) is an
+    // OPTIONAL stronger coder Jordan can opt into. Rather than rely on the local
+    // model to call a tool (unreliable), she emits a tiny text MARKER the app turns
+    // into a "Use Claude" confirm card — text generation the 20B model handles well.
+    if (typeof api.on === "function") {
+      api.on("before_prompt_build", async () => ({
+        prependSystemContext:
+          "# Building software\n" +
+          "You are local-first and free: you can build small things yourself using your own tools. " +
+          "Claude Code — a much stronger coding agent — is also installed on Jordan's PC, and he can " +
+          "OPT IN to it for bigger or higher-quality builds.\n\n" +
+          "When Jordan asks you to build, make, create, code, or set up any software (an app, game, " +
+          "website, script, tool, or automation):\n" +
+          "1. Reply briefly in your normal voice — acknowledge what he wants and offer the choice: you " +
+          "can build it yourself, or hand it to Claude for a stronger version.\n" +
+          "2. On the VERY LAST line, output a build marker in EXACTLY this format, with nothing after it:\n" +
+          "   [[BUILD: project=<short-kebab-name> | task=<one concise sentence of what to build>]]\n" +
+          "   Pick a sensible kebab-case project name from his request. This marker is not visible prose " +
+          "— it becomes a tap-to-build button in the app, so don't mention or describe it.\n" +
+          "Do NOT create the files yourself unless Jordan explicitly tells you to do it yourself / locally.",
+      }));
+    }
+
     // HTTP entry point for the Butler phone app (gateway token auth).
     // POST /api/v1/code-dispatch  {"action":"build","project":"x","task":"...","continue":false}
     //                             {"action":"jobs","jobId":"optional"}

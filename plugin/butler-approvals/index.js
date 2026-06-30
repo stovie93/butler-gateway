@@ -15,6 +15,9 @@ const APPROVALS_DIR = join(WORKSPACE, "approvals");
 const AUDIT_FILE = join(WORKSPACE, "dispatch-audit.log");
 const CONFIG_FILE = join(HOME, ".openclaw", "openclaw.json");
 const PUSH_TOKENS_FILE = join(WORKSPACE, "push-tokens.json");
+// A unified, append-only log of every notification raised to the phone
+// (approvals, reminders, builds). The app reads it for in-app history.
+const NOTIFICATIONS_FILE = join(WORKSPACE, "notifications.jsonl");
 
 const TERMINAL = ["allowed", "denied", "expired"];
 const VALID_DECISIONS = ["allow-once", "deny"];
@@ -219,14 +222,39 @@ async function getFcmAccessToken() {
   }
 }
 
-// Push a pending approval to every registered device. Best-effort; never throws.
-// Dead tokens (UNREGISTERED / invalid → 404/400) are pruned so the store stays
-// clean. Tapping the notification opens the app on the Approvals tab (data.type).
+// ---- notifications log (in-app history) ------------------------------------
+
+// Append one notification to the unified history. Best-effort; never throws.
+function logNotification(type, title, body) {
+  try {
+    const line = JSON.stringify({ ts: new Date().toISOString(), type: String(type || "info"), title: String(title || ""), body: String(body || "") });
+    appendFileSync(NOTIFICATIONS_FILE, line + "\n", "utf8");
+  } catch {}
+}
+
+// Read the most recent notifications (newest first), capped.
+function readRecentNotifications(limit = 50) {
+  try {
+    const text = readFileSync(NOTIFICATIONS_FILE, "utf8");
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    const out = [];
+    for (const l of lines.slice(-Math.max(1, Math.min(limit, 200)))) {
+      try {
+        out.push(JSON.parse(l));
+      } catch {}
+    }
+    return out.reverse();
+  } catch {
+    return [];
+  }
+}
+
 // Generic phone push to every registered device. Best-effort; never throws.
 // channelId must be an Android channel the app created (approvals | reminders).
 // Reusable "notify my phone" primitive — used for approvals and, via the
 // /api/v1/notify endpoint, for build-completion and other one-off notifications.
 async function sendPush(title, body, data = {}, channelId = "approvals") {
+  logNotification(data?.type ?? "info", title, body); // record it even if push isn't delivered
   if (!_fcm?.projectId) return;
   const tokens = loadTokens();
   if (!tokens.length) return;
@@ -287,6 +315,11 @@ function decisionToStatus(decision) {
 // A short, human-readable hint of what the tool was asked to do.
 function argsBrief(params) {
   if (!params || typeof params !== "object") return "";
+  // Build tool: show "project — what to build" rather than raw JSON.
+  if (params.project && params.task) {
+    const s = `${params.project} — ${params.task}`.replace(/\s+/g, " ").trim();
+    return s.length > 200 ? s.slice(0, 200) + "…" : s;
+  }
   const v =
     params.summary ?? params.command ?? params.symbol ?? params.query ?? params.prompt ?? params.url ?? params.path;
   let s;
@@ -578,6 +611,26 @@ export default {
           return send(200, { ok: true, id: record.id, decision, status: decisionToStatus(decision) });
         }
         return send(400, { error: "Unknown action" });
+      },
+    });
+
+    // In-app notification history (approvals, reminders, builds).
+    // GET /api/v1/notifications → { notifications: [{ts,type,title,body}, …] }
+    api.registerHttpRoute({
+      path: "/api/v1/notifications",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        if ((req.method ?? "GET").toUpperCase() !== "GET") {
+          res.statusCode = 405;
+          res.setHeader("Allow", "GET");
+          res.end(JSON.stringify({ error: "Method Not Allowed" }));
+          return true;
+        }
+        res.statusCode = 200;
+        res.end(JSON.stringify({ notifications: readRecentNotifications(50) }));
+        return true;
       },
     });
 
