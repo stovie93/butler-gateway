@@ -1,0 +1,14 @@
+{
+  "name": "butler-awareness",
+  "version": "1.0.0",
+  "description": "Situational awareness injected every turn — clock, running builds, pending reminders, auto-recalled memories.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "butler-awareness",
+  "name": "Butler Awareness",
+  "description": "Situational awareness injected every turn — clock, running builds, pending reminders, auto-recalled memories.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
