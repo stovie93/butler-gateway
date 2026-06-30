@@ -341,8 +341,18 @@ export default {
     // ordinary messages, so it's effectively free when there's nothing to catch.
     if (typeof api.on === "function") {
       const captureCache = new Map(); // fact-key -> ts, dedupe across a turn's calls
-      api.on("before_prompt_build", async (event) => {
+      // Only on genuine interactive user turns — not internal boot/heartbeat
+      // prompt builds (which also report trigger="user" but have no provider/
+      // channel), so we never capture "facts" out of the gateway's own prompts.
+      const isInteractive = (ctx) => {
+        if (!ctx || ctx.trigger !== "user") return false;
+        if (!ctx.sessionKey && !ctx.sessionId) return false;
+        if ((ctx.messageProvider ?? "").trim().toLowerCase() === "webchat") return true;
+        return Boolean(ctx.channelId && ctx.channelId.trim());
+      };
+      api.on("before_prompt_build", async (event, ctx) => {
         try {
+          if (!isInteractive(ctx)) return;
           const fact = extractCaptureFact(event?.prompt);
           if (!fact) return;
           const key = fact.toLowerCase().slice(0, 80);

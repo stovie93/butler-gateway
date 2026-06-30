@@ -46,6 +46,18 @@ function readJson(file) {
   }
 }
 
+// Only act on genuine interactive user turns — not the gateway's internal
+// boot-check / heartbeat / subagent prompt builds (which also report
+// trigger="user" but carry no message provider/channel). Avoids spending a
+// memory-search subprocess on every internal model call. Mirrors OpenClaw's
+// active-memory gating.
+function isInteractive(ctx) {
+  if (!ctx || ctx.trigger !== "user") return false;
+  if (!ctx.sessionKey && !ctx.sessionId) return false;
+  if ((ctx.messageProvider ?? "").trim().toLowerCase() === "webchat") return true;
+  return Boolean(ctx.channelId && ctx.channelId.trim());
+}
+
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -198,8 +210,9 @@ export default {
   register(api) {
     if (typeof api.on !== "function") return;
 
-    api.on("before_prompt_build", async (event) => {
+    api.on("before_prompt_build", async (event, ctx) => {
       try {
+        if (!isInteractive(ctx)) return;
         // Clock + live state are instant local reads; never let them throw.
         let reminders = [];
         let jobs = [];
