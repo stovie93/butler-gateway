@@ -1,6 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { newId, serializeMemory, parseMemory, matchId, extractCaptureFact } from "./index.js";
+import { newId, serializeMemory, parseMemory, matchId, extractCaptureFact, extractPassiveFact } from "./index.js";
+
+test("extractPassiveFact captures high-confidence durable facts", () => {
+  assert.equal(extractPassiveFact("oh by the way I'm allergic to peanuts"), "Jordan is allergic to peanuts.");
+  assert.equal(extractPassiveFact("heads up — I am allergic to shellfish"), "Jordan is allergic to shellfish.");
+  assert.equal(extractPassiveFact("I'm working at Pixar now"), "Jordan works at Pixar.");
+  assert.equal(extractPassiveFact("my dog is named Rex and he's huge"), "Jordan's dog is named Rex.");
+  assert.equal(extractPassiveFact("my wife's name is Sarah"), "Jordan's wife is named Sarah.");
+  assert.equal(extractPassiveFact("I live in Denver"), "Jordan lives in Denver.");
+  assert.equal(extractPassiveFact("I work at Lockheed Martin these days"), "Jordan works at Lockheed Martin.");
+  assert.equal(extractPassiveFact("my favourite team is Arsenal"), "Jordan's favourite team is Arsenal.");
+});
+
+test("extractPassiveFact rejects generic/pronoun objects and questions (precision)", () => {
+  assert.equal(extractPassiveFact("where do I live again?"), null); // question
+  assert.equal(extractPassiveFact("I work for myself"), null); // pronoun object
+  assert.equal(extractPassiveFact("I live in a van down by the river"), null); // article object
+  assert.equal(extractPassiveFact("I work at home"), null); // filler object
+  assert.equal(extractPassiveFact("my favourite thing is you"), null); // pronoun object
+  assert.equal(extractPassiveFact("I'm from there originally"), null); // filler object
+  assert.equal(extractPassiveFact("build me a snake game"), null); // unrelated
+  assert.equal(extractPassiveFact("how are you today?"), null);
+});
 
 test("extractCaptureFact catches explicit remember intents", () => {
   assert.equal(extractCaptureFact("Please remember that my cat is named Pixel."), "My cat is named Pixel.");

@@ -172,6 +172,68 @@ function extractCaptureFact(prompt) {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
+// ---- passive capture (durable facts mentioned in passing) ------------------
+
+// Beyond explicit "remember…" intents, pick up high-confidence durable facts
+// Jordan states in passing ("I'm allergic to peanuts", "my dog is named Rex")
+// so memory compounds on its own. Deliberately HIGH-PRECISION: a curated set of
+// first-person patterns, each guarded against generic/pronoun objects, because
+// a wrong "remembered" fact is worse than a missed one. Saved tagged "auto" so
+// it's easy to review/delete in the app.
+const STOP_OBJECTS = /^(?:a|an|the|my|your|his|her|their|our|this|that|these|those|it|its|i|you|he|she|we|they|me|him|them|us|myself|yourself|himself|herself|themselves|ourselves|here|there|home|work|school|bed|some|any|no|not|sure|good|great|fine|ok|okay|nothing|something|anything|everyone|someone|going|doing|trying|just|really|very|so|too|now|today|tonight|tomorrow)\b/i;
+
+function cleanObj(s) {
+  return String(s ?? "").trim().replace(/^["'(]+/, "").replace(/["').,!?;:]+$/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Validate a captured object is a real, specific value (not a pronoun/article
+// or filler). Returns the cleaned object or null.
+function objOrNull(s) {
+  let c = cleanObj(s);
+  // Drop trailing temporal filler so "Lockheed Martin these days" → "Lockheed Martin".
+  c = c.replace(/\s+(?:these days|nowadays|now|currently|at the moment|right now|at present|atm|today|lately|recently)\b.*$/i, "").trim();
+  if (c.length < 2 || c.length > 60) return null;
+  if (STOP_OBJECTS.test(c)) return null;
+  return c;
+}
+
+const PASSIVE_PATTERNS = [
+  { re: /\b(?:i'?m|i am) allergic to (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan is allergic to ${o}.`; } },
+  {
+    re: /\bmy (wife|husband|partner|girlfriend|boyfriend|fianc[ée]+|son|daughter|kid|child|baby|dog|cat|pet|boss|manager|mum|mom|dad|father|mother|brother|sister|roommate|flatmate)(?:'?s)?(?: name)? (?:is|are) (?:named |called )?([A-Za-z][\w'’-]{1,28})/i,
+    f: (m) => {
+      const name = cleanObj(m[2]);
+      if (!name) return null;
+      // Without an explicit "named/called", require a capitalized name so
+      // "my dog is huge" / "my boss is great" don't become false facts.
+      const explicit = /\b(?:named|called)\s/i.test(m[0]);
+      if (!explicit && !/^[A-Z]/.test(name)) return null;
+      return `Jordan's ${m[1].toLowerCase()} is named ${name}.`;
+    },
+  },
+  { re: /\bmy birthday(?:'s| is)(?: on)? (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan's birthday is ${o}.`; } },
+  { re: /\b(?:i live|i'?m living|i am living) in (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan lives in ${o}.`; } },
+  { re: /\b(?:i'?m|i am) from (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan is from ${o}.`; } },
+  { re: /\b(?:i work|i'?m working|i am working) (?:at|for) (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan works at ${o}.`; } },
+  { re: /\b(?:i work|i'?m working|i am working) as (?:an? )?(.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan works as ${o}.`; } },
+  { re: /\bmy favou?rite (.+?) is (.+?)(?:[.,!?]|$)/i, f: (m) => { const a = objOrNull(m[1]), b = objOrNull(m[2]); return a && b && `Jordan's favourite ${a} is ${b}.`; } },
+];
+
+// Pull a single high-confidence durable fact out of a passing statement, or
+// null. Skips questions outright. Pure + unit-tested.
+function extractPassiveFact(prompt) {
+  const raw = String(prompt ?? "").replace(/\s+/g, " ").trim();
+  if (!raw || raw.includes("?")) return null;
+  for (const { re, f } of PASSIVE_PATTERNS) {
+    const m = raw.match(re);
+    if (m) {
+      const fact = f(m);
+      if (fact && fact.length >= 8 && fact.length <= 200) return fact;
+    }
+  }
+  return null;
+}
+
 // ---- CLI bridge (reindex + semantic search) --------------------------------
 
 // Resolve the OpenClaw CLI's JS entry so we can run it via `node` directly
@@ -325,7 +387,7 @@ function readBody(req) {
   });
 }
 
-export { newId, serializeMemory, parseMemory, matchId, extractCaptureFact };
+export { newId, serializeMemory, parseMemory, matchId, extractCaptureFact, extractPassiveFact };
 
 export default {
   id: "butler-memory",
@@ -353,7 +415,8 @@ export default {
       api.on("before_prompt_build", async (event, ctx) => {
         try {
           if (!isInteractive(ctx)) return;
-          const fact = extractCaptureFact(event?.prompt);
+          // Explicit "remember…" wins; otherwise try a high-confidence passing fact.
+          const fact = extractCaptureFact(event?.prompt) || extractPassiveFact(event?.prompt);
           if (!fact) return;
           const key = fact.toLowerCase().slice(0, 80);
           const now = Date.now();
