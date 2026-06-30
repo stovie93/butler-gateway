@@ -1,0 +1,13 @@
+{
+  "id": "butler-websearch",
+  "name": "Butler Web Search",
+  "description": "Live web answers injected on explicit search intent — Tavily server-side, no tool-calling.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "butler-websearch",
+  "version": "1.0.0",
+  "description": "Live web answers injected on explicit search intent — Tavily server-side, no tool-calling.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}
