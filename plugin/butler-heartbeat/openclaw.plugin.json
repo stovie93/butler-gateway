@@ -1,0 +1,43 @@
+{
+  "id": "butler-heartbeat",
+  "name": "Butler Heartbeat",
+  "description": "Scheduled agent check-ins (the butler wakes up, looks around, and pushes to the phone when it matters), plus a notify_jordan tool for unprompted messages.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "entries": {
+        "type": "array",
+        "description": "Scheduled beats. Each fires a fresh agent turn over the gateway's own chat endpoint; the reply is pushed to the phone. Default: a daily 08:00 morning briefing.",
+        "items": {
+          "type": "object",
+          "required": ["id", "prompt"],
+          "properties": {
+            "id": { "type": "string", "description": "Stable identifier (used for state + manual runs)." },
+            "at": { "type": "string", "description": "Daily local time, e.g. \"08:00\" or \"9:30pm\". Use this OR every." },
+            "every": { "type": "string", "description": "Interval, e.g. \"2h\", \"90m\". Use this OR at." },
+            "prompt": { "type": "string", "description": "The instruction the butler wakes up to. In decide mode, tell it to reply HEARTBEAT_OK when nothing needs attention." },
+            "mode": { "type": "string", "enum": ["always", "decide"], "description": "always = push every reply; decide = the model can stay silent with HEARTBEAT_OK. Default decide." },
+            "title": { "type": "string", "description": "Push notification title. Default \"Clawdia\"." },
+            "model": { "type": "string", "description": "Optional model override for this beat (x-openclaw-model)." },
+            "enabled": { "type": "boolean", "description": "Set false to pause an entry. Default true." }
+          }
+        }
+      },
+      "quietHours": {
+        "type": "object",
+        "description": "Window during which interval (every) beats are suppressed. Daily (at) beats are unaffected.",
+        "properties": {
+          "start": { "type": "string", "description": "e.g. \"22:00\"" },
+          "end": { "type": "string", "description": "e.g. \"08:00\"" }
+        }
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["notify_jordan"]
+  }
+}
