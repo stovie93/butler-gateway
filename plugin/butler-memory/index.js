@@ -344,8 +344,8 @@ export function buildJournalPrompt(messages) {
     .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
     .map((m) => ({
       role: m.role,
-      // The build marker is UI plumbing, not conversation.
-      text: m.content.replace(/\[\[BUILD:[\s\S]*?\]\]/gi, " ").replace(/\s+/g, " ").trim(),
+      // Action markers ([[BUILD: …]], [[ASK: …]], …) are UI plumbing, not conversation.
+      text: m.content.replace(/\[\[[A-Z_]{2,16}:[\s\S]*?\]\]/g, " ").replace(/\s+/g, " ").trim(),
     }))
     .filter((m) => m.text);
   if (turns.length < JOURNAL_MIN_MESSAGES) return null;

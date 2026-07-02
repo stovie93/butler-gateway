@@ -24,6 +24,7 @@ plugin/butler-pc/          PC status, processes, and approval-gated power action
 plugin/butler-reminders/   timed reminders with PC toast + phone push delivery
 plugin/butler-heartbeat/   scheduled agent check-ins pushed to the phone + an unprompted-message tool
 plugin/butler-websearch/   live web answers (Tavily) + server-side fetch of pasted URLs, SSRF-guarded, audited
+plugin/butler-brain/       cloud-brain escalation: hand a hard question to Claude via an [[ASK]] marker card; answer lands in chat + push
 plugin/butler-models/      model list/switch for the app's model picker
 plugin/code-dispatch/      POST /api/v1/code-dispatch (+ SSE /stream) and /build /jobs /cancel /awake chat commands
 scripts/dispatch-claude.ps1   launches a headless Claude Code build for a project, tracks it as a job (records PID + result summary)
@@ -50,6 +51,7 @@ Once set up, the gateway exposes (token-authenticated, tailnet-only):
 | `POST /api/v1/pc` | PC status, processes, power actions |
 | `POST /api/v1/heartbeat` | `list` / `run` — inspect and manually fire scheduled check-ins |
 | `POST /api/v1/shell` | propose a command (same approval gate as the `run_command` tool) |
+| `POST /api/v1/brain` | `ask` / `get` / `list` — cloud-brain questions and their answers |
 | `POST /api/v1/persona`, `/api/v1/chat-models`, `/api/v1/notifications` | the app's Persona editor, model picker, and notification history |
 | `/build`, `/jobs`, `/cancel`, `/awake` | the same dispatch actions as chat commands (e.g. over WhatsApp) |
 

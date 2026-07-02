@@ -1,0 +1,7 @@
+{
+  "name": "butler-brain",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Optional cloud-brain escalation: ask Claude hard questions via an [[ASK]] action marker, with the user tapping to consent.",
+  "main": "index.js"
+}

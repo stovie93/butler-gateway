@@ -9,7 +9,7 @@ token-authenticated gateway reachable from your phone over Tailscale, phone-appr
 command execution, scheduled check-ins that push to your phone, live web answers, and the
 ability to dispatch coding builds to Claude Code.
 
-**Minimal path:** steps 1, 2, 4, 7, and 9 give you a working chat app with memory,
+**Minimal path:** steps 1, 2, 4, 9, and 11 give you a working chat app with memory,
 persona, awareness, and approvals. Everything else (Claude Code builds, push
 notifications, web search, heartbeats) layers on top and is clearly marked optional.
 
@@ -20,7 +20,7 @@ notifications, web search, heartbeats) layers on top and is clearly marked optio
 - Windows 10/11 with a decent GPU (for a 14B–20B local model) — CPU works but is slow.
 - [Node.js](https://nodejs.org) 20+.
 - Optional, per feature:
-  - A **Claude subscription** or Anthropic API access — only for dispatched Claude Code builds (step 3).
+  - A **Claude subscription** or Anthropic API access — only for dispatched Claude Code builds and the cloud brain (step 3).
   - A free **[Tavily](https://tavily.com)** API key — only for live web search (step 6).
   - A free **[Firebase](https://console.firebase.google.com)** project — only for push notifications to the phone (step 5).
 
@@ -78,10 +78,10 @@ openclaw status
 
 ---
 
-## 3. Claude Code — optional, for dispatched builds
+## 3. Claude Code — optional, for builds + the cloud brain
 
-Only needed for the **Build** tab / `build_project`. Install and sign in — dispatched
-builds shell out to the `claude` CLI:
+Only needed for the **Build** tab / `build_project` and the `butler-brain` escalation
+("ask Claude …"). Install and sign in — both shell out to the `claude` CLI:
 
 ```powershell
 npm install -g @anthropic-ai/claude-code
@@ -121,6 +121,7 @@ Get-ChildItem "<this repo>\plugin" -Directory | ForEach-Object {
 | `butler-reminders` | Timed reminders (`set_reminder` etc.) with PC toast + phone push delivery. | `fcm` for push |
 | `butler-heartbeat` | Scheduled agent check-ins (e.g. a daily 08:00 morning briefing) pushed to the phone, plus a tool that lets the agent message you unprompted. | `entries`, `quietHours` |
 | `butler-websearch` | Live web answers on explicit search intent (Tavily), and server-side fetch of any URL you paste so the model answers from the actual page. | Tavily key |
+| `butler-brain` | Cloud-brain escalation: say "ask Claude …" (or accept the model's offer) and the question is handed to Claude on the PC; the answer drops into the chat and arrives as a push. The tap in the app is the consent — it never escalates on its own. | no (needs step 3) |
 | `butler-models` | Lists the allowed Ollama models so the app's model picker works; per-request switching. | no |
 | `code-dispatch` | Dispatch coding jobs to Claude Code with live streaming logs (`/build`, `/jobs`, `/cancel`, `/awake` + the JSON route the apps use). | no (needs step 3 + 8) |
 
@@ -140,6 +141,7 @@ full block in place):
     "butler-models": { "enabled": true },
     "butler-shell": { "enabled": true },
     "butler-websearch": { "enabled": true },
+    "butler-brain": { "enabled": true },
     "butler-approvals": {
       "enabled": true,
       "config": {
@@ -256,7 +258,35 @@ API key.
 
 ---
 
-## 7. Install the scripts (needed for code-dispatch)
+## 7. Cloud brain (optional — needs Claude Code from step 3)
+
+With `butler-brain` enabled, the local model gains an escape hatch for genuinely hard
+questions. Say **"ask Claude …"** in chat (or accept when the model itself offers) and the
+reply ends with an invisible `[[ASK: question=…]]` action marker that the app turns into a
+tap-to-ask card. The tap is the consent — escalation uses your Claude subscription, so the
+model can never spend it on its own. `claude -p` runs headless in the background; the
+answer fills into the chat a minute or two later and also arrives as a push if the app is
+closed. Runs are recorded under `~/.openclaw/workspace/brain/` and audited in
+`brain-audit.log`.
+
+Optional config (defaults are sensible):
+
+```json
+"butler-brain": {
+  "enabled": true,
+  "config": { "timeoutMs": 300000, "maxAnswerChars": 6000, "model": "", "nudge": true }
+}
+```
+
+> **Action markers**, for the curious: `[[NAME: key=value | key=value]]` on the last line
+> of a reply is the convention the gateway uses to let a small local model *propose*
+> actions as plain text (which it does reliably) instead of tool calls (which it doesn't).
+> The app renders known markers as confirm cards — `[[BUILD: …]]` and `[[ASK: …]]` today —
+> and strips unknown ones, so new markers can ship gateway-first.
+
+---
+
+## 8. Install the scripts (needed for code-dispatch)
 
 ```powershell
 $ws = "$env:USERPROFILE\.openclaw\workspace\scripts"
@@ -279,7 +309,7 @@ Copy-Item "<this repo>\scripts\openclaw-awake.ps1"  "$env:USERPROFILE\openclaw-a
 
 ---
 
-## 8. Tailscale (reach it from your phone)
+## 9. Tailscale (reach it from your phone)
 
 ```powershell
 winget install Tailscale.Tailscale
@@ -301,7 +331,7 @@ Install the **Tailscale** app on your phone and sign in with the **same account*
 
 ---
 
-## 9. Verify the whole chain
+## 10. Verify the whole chain
 
 From the PC (loopback), with your token:
 
@@ -319,6 +349,10 @@ Invoke-RestMethod http://127.0.0.1:18789/v1/chat/completions -Method Post -Heade
 Invoke-RestMethod http://127.0.0.1:18789/api/v1/heartbeat -Method Post -Headers $h -Body '{"action":"list"}'
 Invoke-RestMethod http://127.0.0.1:18789/api/v1/heartbeat -Method Post -Headers $h -Body '{"action":"run","id":"morning-briefing"}'
 
+# cloud brain (needs Claude Code): fire a question, then poll the returned id
+Invoke-RestMethod http://127.0.0.1:18789/api/v1/brain -Method Post -Headers $h -Body '{"action":"ask","question":"In one sentence, what is a monad?"}'
+Invoke-RestMethod http://127.0.0.1:18789/api/v1/brain -Method Post -Headers $h -Body '{"action":"list"}'
+
 # approval loop (a card should appear in the app's Approvals tab / on your phone)
 # — or type /test-approval in chat if enableTestCommand is true
 
@@ -334,7 +368,7 @@ the answer should arrive only after you approve.
 
 ---
 
-## 10. Point the apps at it
+## 11. Point the apps at it
 
 In **butler-app** (phone) or **butler-desktop**, open Settings and enter:
 

@@ -14,7 +14,7 @@ test("buildJournalPrompt renders a transcript and skips thin conversations", () 
   );
   const prompt = buildJournalPrompt([
     { role: "user", content: "plan my trip to Denver" },
-    { role: "assistant", content: "Sure! Here's an idea [[BUILD: project=x | task=y]]" },
+    { role: "assistant", content: "Sure! Here's an idea [[BUILD: project=x | task=y]] [[ASK: question=z]]" },
     { role: "user", content: "book the museum for Saturday" },
     { role: "assistant", content: "Done — Saturday it is." },
     { role: "assistant", content: "", pending: true }, // empty bubbles dropped
@@ -23,6 +23,7 @@ test("buildJournalPrompt renders a transcript and skips thin conversations", () 
   assert.match(prompt, /Jordan: plan my trip to Denver/);
   assert.match(prompt, /You: Done — Saturday it is\./);
   assert.ok(!prompt.includes("[[BUILD"), "build marker stripped");
+  assert.ok(!prompt.includes("[[ASK"), "ask marker stripped");
 });
 
 test("extractPassiveFact captures high-confidence durable facts", () => {

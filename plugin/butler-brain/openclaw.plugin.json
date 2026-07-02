@@ -1,0 +1,30 @@
+{
+  "id": "butler-brain",
+  "name": "Butler Brain",
+  "description": "Optional cloud-brain escalation: the local model offers to ask Claude (Claude Code CLI) genuinely hard questions via an [[ASK]] action marker; the user taps to consent, the answer is pushed and fills into the chat.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "timeoutMs": {
+        "type": "number",
+        "description": "How long a claude -p run may take before it's killed. Default 300000 (5 min)."
+      },
+      "maxAnswerChars": {
+        "type": "number",
+        "description": "Answers are capped at this many characters. Default 6000."
+      },
+      "model": {
+        "type": "string",
+        "description": "Optional --model override for the Claude CLI. Default: whatever the CLI is configured to use."
+      },
+      "nudge": {
+        "type": "boolean",
+        "description": "Set false to stop teaching the local model the [[ASK]] marker (the HTTP route keeps working). Default true."
+      }
+    }
+  }
+}

@@ -67,6 +67,7 @@
       "butler-models": { "enabled": true },
       "butler-shell": { "enabled": true },
       "butler-websearch": { "enabled": true },
+      "butler-brain": { "enabled": true },
       "butler-approvals": {
         "enabled": true,
         "config": {
