@@ -1,0 +1,14 @@
+{
+  "name": "butler-shell",
+  "version": "1.0.0",
+  "description": "Approval-gated general command execution for the butler.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

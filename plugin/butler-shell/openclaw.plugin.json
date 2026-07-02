@@ -1,0 +1,29 @@
+{
+  "id": "butler-shell",
+  "name": "Butler Shell",
+  "description": "General hands: the run_command tool proposes any PowerShell command, and nothing executes until the exact command is approved from the phone through the approval relay. Fail closed.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "timeoutMs": {
+        "type": "number",
+        "description": "Hard cap on command runtime in milliseconds (the process is killed after). Default 90000."
+      },
+      "maxOutputChars": {
+        "type": "number",
+        "description": "Cap on captured stdout/stderr returned to the model. Default 8000."
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Default working directory for commands. Default: the user's home directory."
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["run_command"]
+  }
+}
