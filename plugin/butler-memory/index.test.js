@@ -1,6 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { newId, serializeMemory, parseMemory, matchId, extractCaptureFact, extractPassiveFact } from "./index.js";
+import { buildJournalPrompt, newId, serializeMemory, parseMemory, matchId, extractCaptureFact, extractPassiveFact } from "./index.js";
+
+test("buildJournalPrompt renders a transcript and skips thin conversations", () => {
+  assert.equal(buildJournalPrompt([]), null);
+  assert.equal(buildJournalPrompt(null), null);
+  assert.equal(
+    buildJournalPrompt([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hey!" },
+    ]),
+    null, // under the minimum turn count
+  );
+  const prompt = buildJournalPrompt([
+    { role: "user", content: "plan my trip to Denver" },
+    { role: "assistant", content: "Sure! Here's an idea [[BUILD: project=x | task=y]]" },
+    { role: "user", content: "book the museum for Saturday" },
+    { role: "assistant", content: "Done — Saturday it is." },
+    { role: "assistant", content: "", pending: true }, // empty bubbles dropped
+  ]);
+  assert.match(prompt, /journal entry/);
+  assert.match(prompt, /Jordan: plan my trip to Denver/);
+  assert.match(prompt, /You: Done — Saturday it is\./);
+  assert.ok(!prompt.includes("[[BUILD"), "build marker stripped");
+});
 
 test("extractPassiveFact captures high-confidence durable facts", () => {
   assert.equal(extractPassiveFact("oh by the way I'm allergic to peanuts"), "Jordan is allergic to peanuts.");

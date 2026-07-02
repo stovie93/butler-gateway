@@ -327,6 +327,88 @@ function addMemory(text, { tags = [], source = "butler" } = {}) {
   return { ok: true, record };
 }
 
+// ---- session journal ---------------------------------------------------------
+// When Jordan clears a chat, the app first sends the transcript here. We have
+// the local model write a short journal entry and save it as a memory, so the
+// next conversation can recall what the last one was about — continuity across
+// the session rotation instead of a clean lobotomy.
+
+const JOURNAL_MAX_MESSAGES = 24;
+const JOURNAL_MSG_CHARS = 400;
+const JOURNAL_MIN_MESSAGES = 4;
+
+// Render a transcript for the summarizer. Pure + unit-tested. Null when the
+// conversation is too thin to be worth a journal entry.
+export function buildJournalPrompt(messages) {
+  const turns = (Array.isArray(messages) ? messages : [])
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .map((m) => ({
+      role: m.role,
+      // The build marker is UI plumbing, not conversation.
+      text: m.content.replace(/\[\[BUILD:[\s\S]*?\]\]/gi, " ").replace(/\s+/g, " ").trim(),
+    }))
+    .filter((m) => m.text);
+  if (turns.length < JOURNAL_MIN_MESSAGES) return null;
+  const transcript = turns
+    .slice(-JOURNAL_MAX_MESSAGES)
+    .map((m) => `${m.role === "user" ? "Jordan" : "You"}: ${m.text.slice(0, JOURNAL_MSG_CHARS)}`)
+    .join("\n");
+  return (
+    "Jordan just closed this conversation. Write your private journal entry for it: 2-4 plain " +
+    "sentences, past tense, capturing what it was about, anything decided or accomplished, and " +
+    "any detail worth knowing in future conversations. No greetings, no markdown, no preamble — " +
+    "output only the journal entry itself.\n\n--- conversation ---\n" +
+    transcript
+  );
+}
+
+function memoryGatewayAuth() {
+  const root = readJson(CONFIG_FILE) ?? {};
+  return { token: root?.gateway?.auth?.token ?? null, port: root?.gateway?.port ?? 18789 };
+}
+
+// Ask the local model (fresh loopback session) to write the entry.
+async function summarizeTranscript(prompt) {
+  const { token, port } = memoryGatewayAuth();
+  if (!token) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 180_000);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        model: "openclaw",
+        user: `journal-${Date.now().toString(36)}`,
+        stream: false,
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const text = body?.choices?.[0]?.message?.content;
+    return typeof text === "string" && text.trim() ? text.trim().slice(0, 800) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function journalConversation(messages) {
+  const prompt = buildJournalPrompt(messages);
+  if (!prompt) return { ok: true, skipped: true, reason: "conversation too short" };
+  const summary = await summarizeTranscript(prompt);
+  if (!summary) return { ok: false, error: "summarizer unavailable" };
+  // Local date, not UTC — an evening chat must not be journaled as tomorrow.
+  const d = new Date();
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const r = addMemory(`Journal ${date}: ${summary}`, { tags: ["journal"], source: "butler" });
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, skipped: false, memory: r.record };
+}
+
 // Delete a memory by id (or unique prefix). Returns { ok, record?, error? }.
 function deleteMemory(idOrPrefix) {
   const { record, error } = matchId(listMemories(), idOrPrefix);
@@ -536,6 +618,10 @@ export default {
           const r = deleteMemory(body.id);
           if (!r.ok) return send(400, { error: r.error });
           return send(200, { ok: true, memory: r.record });
+        }
+        if (body.action === "journal") {
+          const r = await journalConversation(body.messages);
+          return send(r.ok ? 200 : 500, r);
         }
         return send(400, { error: "Unknown action" });
       },

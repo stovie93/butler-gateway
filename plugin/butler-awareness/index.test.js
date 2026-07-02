@@ -1,6 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatNow, relativeLabel, buildAwareness } from "./index.js";
+import { buildAwareness, formatNow, recallQuery, relativeLabel } from "./index.js";
+
+test("recallQuery: trivial prompts skip recall, long prompts stand alone", () => {
+  assert.equal(recallQuery("ok", [{ role: "user", content: "tell me about my dog" }]), "");
+  const long = "Can you help me plan the whole weekend trip to Denver with the family?";
+  assert.equal(recallQuery(long, [{ role: "user", content: "unrelated earlier topic" }]), long);
+});
+
+test("recallQuery folds prior user turns into short follow-ups", () => {
+  const messages = [
+    { role: "user", content: "what do you know about my dog?" },
+    { role: "assistant", content: "Rex! He's huge." },
+    { role: "user", content: [{ type: "text", text: "and my cat?" }] }, // parts-array shape
+  ];
+  const q = recallQuery("what about her diet?", messages);
+  assert.match(q, /my dog/);
+  assert.match(q, /and my cat\?/);
+  assert.match(q, /what about her diet\?$/);
+  // The current message isn't duplicated when it also appears in history.
+  const q2 = recallQuery("and my cat?", messages);
+  assert.equal(q2.match(/and my cat\?/g).length, 1);
+});
 
 test("formatNow renders a readable 12h timestamp", () => {
   const s = formatNow(new Date(2026, 5, 30, 15, 47)); // 30 June 2026, 3:47 PM

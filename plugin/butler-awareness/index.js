@@ -153,6 +153,33 @@ function searchMemories(query, max = 3) {
   });
 }
 
+// Text of a user message, tolerating string or parts-array content shapes.
+function userText(m) {
+  if (!m || m.role !== "user") return "";
+  if (typeof m.content === "string") return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content.map((p) => (typeof p === "string" ? p : String(p?.text ?? ""))).join(" ");
+  }
+  return "";
+}
+
+// Build the recall query. Follow-ups are usually short ("what about the other
+// one?") and carry no searchable meaning on their own — for those we fold in
+// the last couple of user turns from the session. A substantive message stands
+// on its own so old topics don't dilute the search. Pure + unit-tested.
+export function recallQuery(prompt, messages) {
+  const current = String(prompt ?? "").replace(/\s+/g, " ").trim();
+  if (current.length < MIN_RECALL_LEN) return "";
+  if (current.length >= 60) return current;
+  const prior = (Array.isArray(messages) ? messages : [])
+    .map(userText)
+    .map((t) => t.replace(/\s+/g, " ").trim())
+    .filter((t) => t && t !== current)
+    .slice(-2)
+    .map((t) => (t.length > 150 ? t.slice(0, 150) : t));
+  return [...prior, current].join("\n");
+}
+
 // Cached recall: returns [] fast for short messages and on cache hits.
 async function recallFor(prompt) {
   const q = String(prompt ?? "").replace(/\s+/g, " ").trim();
@@ -199,7 +226,7 @@ function buildAwareness({ now = new Date(), reminders = [], jobs = [], memories 
   return lines.join("\n");
 }
 
-export { formatNow, relativeLabel, buildAwareness };
+export { buildAwareness, formatNow, relativeLabel };
 
 export default {
   id: "butler-awareness",
@@ -222,7 +249,7 @@ export default {
         // Auto-recall is best-effort and time-boxed; on miss we still ship the
         // clock + state, so a slow index can never stall or blank the reply.
         let memories = [];
-        try { memories = await recallFor(event?.prompt); } catch {}
+        try { memories = await recallFor(recallQuery(event?.prompt, event?.messages)); } catch {}
 
         return { prependSystemContext: buildAwareness({ now: new Date(), reminders, jobs, memories }) };
       } catch {
