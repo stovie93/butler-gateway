@@ -43,17 +43,72 @@
       }
     }
   },
-  "channels": {
-    "whatsapp": {
-      "selfChatMode": true,
-      "dmPolicy": "allowlist",
-      "allowFrom": ["+1XXXXXXXXXX"],
-      "enabled": true
-    }
+  "tools": {
+    "alsoAllow": [
+      "pc_action",
+      "pc_power",
+      "set_reminder",
+      "list_reminders",
+      "cancel_reminder",
+      "remember",
+      "recall",
+      "forget",
+      "notify_jordan",
+      "run_command"
+    ]
   },
   "plugins": {
     "entries": {
-      "code-dispatch": { "enabled": true }
+      "code-dispatch": { "enabled": true },
+      "butler-persona": { "enabled": true },
+      "butler-memory": { "enabled": true, "config": { "reindexOnWrite": true } },
+      "butler-awareness": { "enabled": true },
+      "butler-pc": { "enabled": true },
+      "butler-models": { "enabled": true },
+      "butler-shell": { "enabled": true },
+      "butler-websearch": { "enabled": true },
+      "butler-approvals": {
+        "enabled": true,
+        "config": {
+          "sensitiveTools": ["pc_power", "build_project"],
+          "timeoutMs": 120000,
+          "timeoutBehavior": "deny",
+          "enableTestCommand": true,
+          "fcm": {
+            "projectId": "REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID",
+            "serviceAccountPath": "C:\\Users\\YOU\\.openclaw\\fcm-service-account.json"
+          }
+        }
+      },
+      "butler-reminders": {
+        "enabled": true,
+        "config": {
+          "pushNotify": true,
+          "fcm": {
+            "projectId": "REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID",
+            "serviceAccountPath": "C:\\Users\\YOU\\.openclaw\\fcm-service-account.json"
+          }
+        }
+      },
+      "butler-heartbeat": {
+        "enabled": true,
+        "config": {
+          "entries": [
+            {
+              "id": "morning-briefing",
+              "at": "08:00",
+              "mode": "always",
+              "title": "Butler ☀️",
+              "prompt": "Good morning! This is your scheduled morning heartbeat. Using what you can see right now (the time, anything running on the PC, pending reminders, what you remember), write a short, warm good-morning message for the day ahead. Keep it under 80 words, plain text, no markdown."
+            }
+          ],
+          "quietHours": { "start": "22:00", "end": "08:00" }
+        }
+      },
+      "tavily": {
+        "enabled": true,
+        "config": { "webSearch": { "apiKey": "REPLACE_WITH_YOUR_TAVILY_KEY_OR_DISABLE" } }
+      }
     }
   }
 }

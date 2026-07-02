@@ -4,8 +4,14 @@ This stands up the PC side that the [Butler apps](https://github.com/stovie93/bu
 talk to. Target OS is **Windows** (the scripts are PowerShell). Run the commands in
 **PowerShell**.
 
-At the end you'll have: a local chat model, a token-authenticated gateway reachable from
-your phone over Tailscale, and the ability to dispatch live coding builds to Claude Code.
+At the end you'll have: a local chat model with a persistent persona and memory, a
+token-authenticated gateway reachable from your phone over Tailscale, phone-approved
+command execution, scheduled check-ins that push to your phone, live web answers, and the
+ability to dispatch coding builds to Claude Code.
+
+**Minimal path:** steps 1, 2, 4, 7, and 9 give you a working chat app with memory,
+persona, awareness, and approvals. Everything else (Claude Code builds, push
+notifications, web search, heartbeats) layers on top and is clearly marked optional.
 
 ---
 
@@ -13,7 +19,10 @@ your phone over Tailscale, and the ability to dispatch live coding builds to Cla
 
 - Windows 10/11 with a decent GPU (for a 14B–20B local model) — CPU works but is slow.
 - [Node.js](https://nodejs.org) 20+.
-- A Claude subscription or Anthropic API access (for Claude Code).
+- Optional, per feature:
+  - A **Claude subscription** or Anthropic API access — only for dispatched Claude Code builds (step 3).
+  - A free **[Tavily](https://tavily.com)** API key — only for live web search (step 6).
+  - A free **[Firebase](https://console.firebase.google.com)** project — only for push notifications to the phone (step 5).
 
 ---
 
@@ -22,10 +31,13 @@ your phone over Tailscale, and the ability to dispatch live coding builds to Cla
 ```powershell
 winget install Ollama.Ollama
 ollama pull gpt-oss:20b        # chat model (pick what fits your VRAM)
-ollama pull nomic-embed-text   # embeddings, for semantic memory (optional)
+ollama pull nomic-embed-text   # embeddings — REQUIRED for the memory features
 ```
 
 Verify: `ollama list` shows the models, and `ollama ps` works.
+
+> `nomic-embed-text` powers semantic memory (remember/recall, auto-recall, journals).
+> Skip it only if you also skip `butler-memory` and `butler-awareness`.
 
 ---
 
@@ -37,7 +49,8 @@ openclaw            # first run sets up ~/.openclaw
 ```
 
 Then edit `~/.openclaw/openclaw.json`. Use [`config/openclaw.example.json`](config/openclaw.example.json)
-as a reference. The essentials:
+as a reference — it now contains a complete working layout for every plugin in this repo.
+The essentials:
 
 - **Generate a token** and set `gateway.auth.token`:
   ```powershell
@@ -47,9 +60,14 @@ as a reference. The essentials:
   `gateway.http.endpoints.chatCompletions.enabled = true`
 - Point the model provider at Ollama (`models.providers.ollama`, `baseUrl http://127.0.0.1:11434`).
 - Set the primary model to your Ollama chat model.
-- (Optional) `agents.defaults.memorySearch` → `{ "provider": "ollama", "model": "nomic-embed-text" }`.
+- `agents.defaults.memorySearch` → `{ "provider": "ollama", "model": "nomic-embed-text" }`
+  (required for the memory features).
 - Set `agents.defaults.sandbox.mode` to `non-main` so the main agent session can run the
   dispatch scripts on the host. (Dispatched builds run as their own host processes regardless.)
+
+> ⚠️ **Editing openclaw.json:** OpenClaw writes this file **UTF-8 with a BOM**. Most
+> editors preserve it fine, but if you script edits (node/python), strip a leading
+> `﻿` before `JSON.parse` and re-prepend it on write, or the gateway may reject the file.
 
 Apply and check:
 
@@ -60,9 +78,10 @@ openclaw status
 
 ---
 
-## 3. Claude Code (the build engine)
+## 3. Claude Code — optional, for dispatched builds
 
-Install and sign in — dispatched builds shell out to the `claude` CLI:
+Only needed for the **Build** tab / `build_project`. Install and sign in — dispatched
+builds shell out to the `claude` CLI:
 
 ```powershell
 npm install -g @anthropic-ai/claude-code
@@ -81,49 +100,163 @@ You should see JSON event lines ending in a `"type":"result"` event.
 
 ## 4. Install the plugins
 
-Both plugins only use Node built-ins, so installing is copy + enable:
+All plugins use only Node built-ins — installing is copy + enable. Copy **all of them**:
 
 ```powershell
-Copy-Item "<this repo>\plugin\code-dispatch"     "$env:USERPROFILE\.openclaw\extensions\code-dispatch"     -Recurse -Force
-Copy-Item "<this repo>\plugin\butler-approvals"   "$env:USERPROFILE\.openclaw\extensions\butler-approvals"   -Recurse -Force
+Get-ChildItem "<this repo>\plugin" -Directory | ForEach-Object {
+  Copy-Item $_.FullName "$env:USERPROFILE\.openclaw\extensions\$($_.Name)" -Recurse -Force
+}
 ```
 
-Enable them in `~/.openclaw/openclaw.json` under `plugins.entries`:
+### What each one does
+
+| Plugin | What it adds | Needs config? |
+| --- | --- | --- |
+| `butler-persona` | Persistent personality (default: "Clawdia"), editable from the app's Persona screen. Rendered into the workspace identity files on every change. | no |
+| `butler-memory` | Durable memory: `remember`/`recall`/`forget` tools, guaranteed capture of "remember that…" requests, passive capture of facts stated offhand, and an end-of-session journal. | no (defaults fine) |
+| `butler-awareness` | Injects a compact context block into **every** turn: current date/time, running builds, pending reminders, and auto-recalled memories. This is what makes a small local model feel present. | no |
+| `butler-approvals` | The approval relay: sensitive tool calls block until you approve/deny from the phone; also the generic phone-push route other plugins use. | `sensitiveTools`, `fcm` for push |
+| `butler-shell` | `run_command` — the agent can propose **any** PowerShell command; it only runs after you approve the exact command text on your phone. Deny/timeout/unreachable all fail closed. Audited. | optional caps |
+| `butler-pc` | PC tab: live status (CPU/RAM/disk/uptime), process list, and approval-gated power actions. | no |
+| `butler-reminders` | Timed reminders (`set_reminder` etc.) with PC toast + phone push delivery. | `fcm` for push |
+| `butler-heartbeat` | Scheduled agent check-ins (e.g. a daily 08:00 morning briefing) pushed to the phone, plus a tool that lets the agent message you unprompted. | `entries`, `quietHours` |
+| `butler-websearch` | Live web answers on explicit search intent (Tavily), and server-side fetch of any URL you paste so the model answers from the actual page. | Tavily key |
+| `butler-models` | Lists the allowed Ollama models so the app's model picker works; per-request switching. | no |
+| `code-dispatch` | Dispatch coding jobs to Claude Code with live streaming logs (`/build`, `/jobs`, `/cancel`, `/awake` + the JSON route the apps use). | no (needs step 3 + 8) |
+
+### Enable them
+
+In `~/.openclaw/openclaw.json` under `plugins.entries` (see the example config for the
+full block in place):
 
 ```json
 "plugins": {
   "entries": {
     "code-dispatch": { "enabled": true },
+    "butler-persona": { "enabled": true },
+    "butler-memory": { "enabled": true, "config": { "reindexOnWrite": true } },
+    "butler-awareness": { "enabled": true },
+    "butler-pc": { "enabled": true },
+    "butler-models": { "enabled": true },
+    "butler-shell": { "enabled": true },
+    "butler-websearch": { "enabled": true },
     "butler-approvals": {
       "enabled": true,
       "config": {
-        "sensitiveTools": [],
+        "sensitiveTools": ["pc_power", "build_project"],
         "timeoutMs": 120000,
         "timeoutBehavior": "deny",
         "enableTestCommand": true
+      }
+    },
+    "butler-reminders": { "enabled": true, "config": { "pushNotify": true } },
+    "butler-heartbeat": {
+      "enabled": true,
+      "config": {
+        "entries": [
+          {
+            "id": "morning-briefing",
+            "at": "08:00",
+            "mode": "always",
+            "title": "Butler ☀️",
+            "prompt": "Good morning! This is your scheduled morning heartbeat. Using what you can see right now (the time, anything running on the PC, pending reminders, what you remember), write a short, warm good-morning message for the day ahead. Keep it under 80 words, plain text, no markdown."
+          }
+        ],
+        "quietHours": { "start": "22:00", "end": "08:00" }
       }
     }
   }
 }
 ```
 
-`butler-approvals` gates the butler agent's sensitive tool calls behind an approval you grant
-from the Butler app. List the tool names to gate in `sensitiveTools` (supports `*`/`?` globs);
-an empty list gates nothing. `enableTestCommand` adds a `/test-approval` chat command that
-creates a pending approval and waits for your decision — handy for verifying the loop before any
-real sensitive tools exist. With no decision in `timeoutMs`, `timeoutBehavior` decides (default
-`deny`).
+Notes on that block:
+
+- **`sensitiveTools`** lists tool names (globs OK) that must be phone-approved before they
+  run. **Do NOT add `run_command` here** — `butler-shell` requests approval internally, and
+  listing it would double-prompt.
+- **Heartbeat entries:** `at: "08:00"` fires once a day (with a 3-hour catch-up window if
+  the PC was off), or use `every: "2h"` for intervals. `mode: "always"` always delivers;
+  `mode: "decide"` lets the model stay silent when there's nothing worth saying. `every`
+  beats respect `quietHours`. Manual test fire:
+  `POST /api/v1/heartbeat {"action":"run","id":"morning-briefing"}`.
+
+### ⚠️ Allow-list the plugin tools (easy to miss)
+
+The agent's tool profile **strips unknown tools** — plugin tools silently disappear unless
+they're allow-listed. Add this at the **top level** of `openclaw.json`:
+
+```json
+"tools": {
+  "alsoAllow": [
+    "pc_action", "pc_power",
+    "set_reminder", "list_reminders", "cancel_reminder",
+    "remember", "recall", "forget",
+    "notify_jordan",
+    "run_command"
+  ]
+}
+```
+
+If a plugin loads fine but the model claims it "doesn't have that tool", this is almost
+always why.
 
 Restart and confirm they loaded:
 
 ```powershell
 openclaw gateway restart
-openclaw plugins list   # look for "code-dispatch ... enabled" and "butler-approvals ... enabled"
+openclaw plugins list   # every plugin above should show "enabled"
 ```
 
 ---
 
-## 5. Install the scripts
+## 5. Push notifications (optional — Firebase FCM)
+
+Without this, everything still works while the app is open (it streams/polls). Push is
+what makes reminders, approvals, and heartbeats reach a **closed** app.
+
+**PC side:**
+
+1. Create a free project at [console.firebase.google.com](https://console.firebase.google.com).
+2. Project settings → **Service accounts** → **Generate new private key** → save the JSON as
+   `~/.openclaw/fcm-service-account.json`.
+3. Add the `fcm` block to **both** `butler-approvals` and `butler-reminders` config:
+
+```json
+"fcm": {
+  "projectId": "your-firebase-project-id",
+  "serviceAccountPath": "C:\\Users\\YOU\\.openclaw\\fcm-service-account.json"
+}
+```
+
+**App side:** in the same Firebase project, add an **Android app** with package name
+`com.stovie93.butler`, download `google-services.json`, drop it in the butler-app repo
+root, and **build the APK from source** (see the butler-app README).
+
+> ⚠️ The prebuilt release APKs have the maintainer's Firebase project baked in, so push
+> **only works with your own build**. Everything else works fine with a release APK.
+
+The app registers its device token with the gateway automatically on connect. Restart the
+gateway and test: create a reminder 1 minute out, close the app, wait for the push.
+
+---
+
+## 6. Web search (optional — Tavily)
+
+Get a free API key from [tavily.com](https://tavily.com) and add it to `plugins.entries`:
+
+```json
+"tavily": { "enabled": true, "config": { "webSearch": { "apiKey": "tvly-..." } } }
+```
+
+`butler-websearch` reuses this key. It only fires on an explicit search intent ("look up…",
+"what's the latest…", a pasted URL) — never on ordinary chat — and every outbound query is
+logged to `~/.openclaw/workspace/websearch-audit.log`. Pasted-URL fetches never leave your
+machine except to the URL itself (private/loopback addresses are refused) and need **no**
+API key.
+
+---
+
+## 7. Install the scripts (needed for code-dispatch)
 
 ```powershell
 $ws = "$env:USERPROFILE\.openclaw\workspace\scripts"
@@ -146,7 +279,7 @@ Copy-Item "<this repo>\scripts\openclaw-awake.ps1"  "$env:USERPROFILE\openclaw-a
 
 ---
 
-## 6. Tailscale (reach it from your phone)
+## 8. Tailscale (reach it from your phone)
 
 ```powershell
 winget install Tailscale.Tailscale
@@ -168,7 +301,7 @@ Install the **Tailscale** app on your phone and sign in with the **same account*
 
 ---
 
-## 7. Verify the whole chain
+## 9. Verify the whole chain
 
 From the PC (loopback), with your token:
 
@@ -178,17 +311,30 @@ $h = @{ Authorization = "Bearer YOUR_TOKEN"; "Content-Type" = "application/json"
 # chat endpoint
 Invoke-RestMethod http://127.0.0.1:18789/v1/models -Headers $h
 
-# dispatch a tiny build
+# memory round-trip (then ask "what's my cat's name?" in a NEW chat)
+$body = '{"model":"gpt-oss:20b","user":"setup-test","messages":[{"role":"user","content":"Remember that my cat is named Pixel."}]}'
+Invoke-RestMethod http://127.0.0.1:18789/v1/chat/completions -Method Post -Headers $h -Body $body
+
+# heartbeat: list schedules, then fire one manually
+Invoke-RestMethod http://127.0.0.1:18789/api/v1/heartbeat -Method Post -Headers $h -Body '{"action":"list"}'
+Invoke-RestMethod http://127.0.0.1:18789/api/v1/heartbeat -Method Post -Headers $h -Body '{"action":"run","id":"morning-briefing"}'
+
+# approval loop (a card should appear in the app's Approvals tab / on your phone)
+# — or type /test-approval in chat if enableTestCommand is true
+
+# dispatch a tiny build (needs Claude Code + scripts)
 $body = '{"action":"build","project":"hello","task":"create hello.txt containing hi"}'
 Invoke-RestMethod http://127.0.0.1:18789/api/v1/code-dispatch -Method Post -Headers $h -Body $body
-
-# watch it
 Invoke-RestMethod http://127.0.0.1:18789/api/v1/code-dispatch -Method Post -Headers $h -Body '{"action":"jobsData","limit":5}'
 ```
 
+In the app itself: ask it to run a PowerShell command ("how many folders are in my repos
+directory?") — an approval card with the **exact command text** should hit your phone, and
+the answer should arrive only after you approve.
+
 ---
 
-## 8. Point the apps at it
+## 10. Point the apps at it
 
 In **butler-app** (phone) or **butler-desktop**, open Settings and enter:
 
@@ -202,17 +348,28 @@ Hit **Test**, save, and you're live.
 
 ## Notes & gotchas
 
+- **Plugin tools vanish?** You forgot `tools.alsoAllow` (step 4). This is the #1 setup trap.
+- **Owner name:** several built-in prompts and one tool name (`notify_jordan`) currently
+  address the owner as "Jordan" — a config-driven owner name is on the roadmap. Everything
+  works regardless; the model just knows its human by that name unless you edit the persona
+  from the app's Persona screen and adjust the heartbeat prompt text.
 - **Sleep:** the watcher blocks sleep only while a build (or an `/awake` hold) is active. It
   can't *wake* a machine that has already slept — on Wi-Fi-only S3 hardware there's no
   remote wake. Use `/awake 2h` before you step away, or raise the idle-sleep timeout
   (`powercfg /change standby-timeout-ac <minutes>`).
-- **Encoding:** the scripts write job JSON as UTF-8-with-BOM and logs as UTF-16 (PowerShell
-  defaults); the plugin already strips the BOM and detects UTF-16 when reading them back.
+- **PC off = butler off.** Heartbeats, reminders, and pushes only happen while the PC is
+  on; daily `at:` heartbeats have a 3-hour catch-up window for morning boots.
+- **Encoding:** the dispatch scripts write job JSON as UTF-8-with-BOM and logs as UTF-16
+  (PowerShell defaults); the plugin already strips the BOM and detects UTF-16 when reading
+  them back. `openclaw.json` itself is UTF-8-with-BOM (see step 2).
 - **Model:** dispatched builds use whatever model the `claude` CLI is configured to use.
+  Chat/heartbeat/journal turns use your Ollama primary; per-request override via the
+  `x-openclaw-model` header (must be in `agents.defaults.models`).
 - **Security:** builds run with `--dangerously-skip-permissions` so they're autonomous. Keep
   the gateway tailnet-only and the token private — anyone with both can run code on your PC.
-  Every `build` and `cancel` is recorded (append-only) in
-  `~/.openclaw/workspace/dispatch-audit.log` for an after-the-fact trail.
+  Audit trails: `dispatch-audit.log` (builds), `shell-audit.log` (run_command),
+  `websearch-audit.log` (outbound searches), `heartbeat.log` (beats), and
+  `approvals/<id>.json` records — all under `~/.openclaw/workspace/`.
 - **Job lifecycle:** dispatched jobs record their runner PID, so `/cancel <id>` kills the
   process tree. On gateway start, jobs left `running` by a crash/reboot are marked
   `interrupted`, and job artifacts older than 14 days (or beyond the newest 200) are pruned.
