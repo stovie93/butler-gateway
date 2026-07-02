@@ -1,7 +1,7 @@
 {
   "id": "butler-heartbeat",
   "name": "Butler Heartbeat",
-  "description": "Scheduled agent check-ins (the butler wakes up, looks around, and pushes to the phone when it matters), plus a notify_jordan tool for unprompted messages.",
+  "description": "Scheduled agent check-ins (the butler wakes up, looks around, and pushes to the phone when it matters), plus a notify_owner tool for unprompted messages.",
   "activation": {
     "onStartup": true
   },
@@ -21,7 +21,7 @@
             "every": { "type": "string", "description": "Interval, e.g. \"2h\", \"90m\". Use this OR at." },
             "prompt": { "type": "string", "description": "The instruction the butler wakes up to. In decide mode, tell it to reply HEARTBEAT_OK when nothing needs attention." },
             "mode": { "type": "string", "enum": ["always", "decide"], "description": "always = push every reply; decide = the model can stay silent with HEARTBEAT_OK. Default decide." },
-            "title": { "type": "string", "description": "Push notification title. Default \"Clawdia\"." },
+            "title": { "type": "string", "description": "Push notification title. Defaults to the butler's persona name." },
             "model": { "type": "string", "description": "Optional model override for this beat (x-openclaw-model)." },
             "enabled": { "type": "boolean", "description": "Set false to pause an entry. Default true." }
           }
@@ -38,6 +38,6 @@
     }
   },
   "contracts": {
-    "tools": ["notify_jordan"]
+    "tools": ["notify_owner"]
   }
 }

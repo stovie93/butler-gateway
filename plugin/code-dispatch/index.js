@@ -13,6 +13,18 @@ const AUDIT_FILE = join(WORKSPACE, "dispatch-audit.log");
 // Terminal job states (a runner is no longer expected to be working).
 const TERMINAL = ["done", "failed", "canceled", "interrupted"];
 
+// The owner's name from the app's Persona editor (persona.json `owner`), with
+// a generic fallback — tool descriptions and nudges read better with a name.
+function ownerRef() {
+  try {
+    let t = readFileSync(join(WORKSPACE, "persona.json"), "utf8");
+    if (t.charCodeAt(0) === 0xfeff) t = t.slice(1);
+    const o = JSON.parse(t)?.owner;
+    if (typeof o === "string" && o.trim()) return o.trim();
+  } catch {}
+  return "the user";
+}
+
 // Append-only audit trail for code-executing / state-changing actions.
 // This endpoint can run arbitrary code on the host, so every build/cancel is logged.
 function appendAudit(entry) {
@@ -303,19 +315,20 @@ export default {
     } catch {}
 
     // Agent-callable build tool. This is what makes building conversational: when
-    // Jordan describes something to build in chat, the model calls this and the
+    // the owner describes something to build in chat, the model calls this and the
     // butler-approvals gate turns it into a "confirm on your phone" card before
     // anything runs (build_project is listed in that plugin's sensitiveTools).
     if (typeof api.registerTool === "function") {
+      const who = ownerRef();
       api.registerTool({
         name: "build_project",
         description:
-          "Dispatch a coding task to Claude Code running on Jordan's PC. Use this whenever Jordan asks " +
+          `Dispatch a coding task to Claude Code running on ${who}'s PC. Use this whenever ${who} asks ` +
           "you to build, make, create, code, implement, or set up any software — an app, script, website, " +
           "game, CLI tool, or automation (e.g. 'build me a snake game', 'make a script that renames files', " +
-          "'create a landing page for…'). Don't explain how he could do it himself and don't interrogate " +
-          "him with lots of questions first — once the request is clear enough to start, call this. If he " +
-          "didn't name the project, pick a short kebab-case name from what he described. Jordan gets a " +
+          "'create a landing page for…'). Don't explain how they could do it themselves and don't interrogate " +
+          "them with lots of questions first — once the request is clear enough to start, call this. If they " +
+          `didn't name the project, pick a short kebab-case name from what they described. ${who} gets a ` +
           "confirmation prompt before any code runs, so it's safe to call as soon as intent is clear.",
         parameters: {
           type: "object",
@@ -326,7 +339,7 @@ export default {
             },
             task: {
               type: "string",
-              description: "What to build, in plain English — include all the detail Jordan provided.",
+              description: "What to build, in plain English — include all the detail the user provided.",
             },
             continueSession: {
               type: "boolean",
@@ -349,28 +362,32 @@ export default {
       });
     }
 
-    // Build-request protocol. Clawdia is local-first and free: she can build small
-    // things herself with her own tools. Claude Code (installed on the PC) is an
-    // OPTIONAL stronger coder Jordan can opt into. Rather than rely on the local
-    // model to call a tool (unreliable), she emits a tiny text MARKER the app turns
-    // into a "Use Claude" confirm card — text generation the 20B model handles well.
+    // Build-request protocol. The butler is local-first and free: it can build
+    // small things itself with its own tools. Claude Code (installed on the PC)
+    // is an OPTIONAL stronger coder the owner can opt into. Rather than rely on
+    // the local model to call a tool (unreliable), it emits a tiny text MARKER
+    // the app turns into a "Use Claude" confirm card — text generation the 20B
+    // model handles well.
     if (typeof api.on === "function") {
-      api.on("before_prompt_build", async () => ({
-        prependSystemContext:
-          "# Building software\n" +
-          "You are local-first and free: you can build small things yourself using your own tools. " +
-          "Claude Code — a much stronger coding agent — is also installed on Jordan's PC, and he can " +
-          "OPT IN to it for bigger or higher-quality builds.\n\n" +
-          "When Jordan asks you to build, make, create, code, or set up any software (an app, game, " +
-          "website, script, tool, or automation):\n" +
-          "1. Reply briefly in your normal voice — acknowledge what he wants and offer the choice: you " +
-          "can build it yourself, or hand it to Claude for a stronger version.\n" +
-          "2. On the VERY LAST line, output a build marker in EXACTLY this format, with nothing after it:\n" +
-          "   [[BUILD: project=<short-kebab-name> | task=<one concise sentence of what to build>]]\n" +
-          "   Pick a sensible kebab-case project name from his request. This marker is not visible prose " +
-          "— it becomes a tap-to-build button in the app, so don't mention or describe it.\n" +
-          "Do NOT create the files yourself unless Jordan explicitly tells you to do it yourself / locally.",
-      }));
+      api.on("before_prompt_build", async () => {
+        const who = ownerRef();
+        return {
+          prependSystemContext:
+            "# Building software\n" +
+            "You are local-first and free: you can build small things yourself using your own tools. " +
+            `Claude Code — a much stronger coding agent — is also installed on ${who}'s PC, and they can ` +
+            "OPT IN to it for bigger or higher-quality builds.\n\n" +
+            `When ${who} asks you to build, make, create, code, or set up any software (an app, game, ` +
+            "website, script, tool, or automation):\n" +
+            "1. Reply briefly in your normal voice — acknowledge what they want and offer the choice: you " +
+            "can build it yourself, or hand it to Claude for a stronger version.\n" +
+            "2. On the VERY LAST line, output a build marker in EXACTLY this format, with nothing after it:\n" +
+            "   [[BUILD: project=<short-kebab-name> | task=<one concise sentence of what to build>]]\n" +
+            "   Pick a sensible kebab-case project name from the request. This marker is not visible prose " +
+            "— it becomes a tap-to-build button in the app, so don't mention or describe it.\n" +
+            `Do NOT create the files yourself unless ${who} explicitly tells you to do it yourself / locally.`,
+        };
+      });
     }
 
     // HTTP entry point for the Butler phone app (gateway token auth).

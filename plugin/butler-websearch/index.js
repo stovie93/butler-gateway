@@ -5,16 +5,16 @@ import { join } from "node:path";
 // Butler web search: gives the local model LIVE web info without depending on
 // it to call a search tool (the agent's "coding" tool-profile strips
 // tavily_search anyway, and a weak model wouldn't reliably call it). Instead,
-// on each turn we detect an explicit "look this up" intent in Jordan's message,
+// on each turn we detect an explicit "look this up" intent in the user's message,
 // call the Tavily REST API directly (server-side, using the key already
 // configured for the tavily plugin), and inject the results into the prompt —
 // the same "harness fetches, model just talks" pattern as auto-recall.
 //
-// Privacy: it ONLY fires on an explicit search intent (Jordan asked to look
+// Privacy: it ONLY fires on an explicit search intent (the user asked to look
 // something up / pasted a URL), so the outbound query is always intentional.
 
 const CONFIG_FILE = join(homedir(), ".openclaw", "openclaw.json");
-// Outbound-search audit: every Tavily call is logged so Jordan can see exactly
+// Outbound-search audit: every Tavily call is logged so the owner can see exactly
 // what left the machine (and so we can verify the feature fired). Best-effort.
 const AUDIT_FILE = join(homedir(), ".openclaw", "workspace", "websearch-audit.log");
 
@@ -188,8 +188,8 @@ function buildPageContext(url, page) {
   lines.push("", page.text);
   lines.push(
     "",
-    "Jordan shared this link — answer using the page content above as the source of truth. " +
-      "If he asked something specific about it, answer that; otherwise give him the gist.",
+    "The user shared this link — answer using the page content above as the source of truth. " +
+      "If they asked something specific about it, answer that; otherwise give them the gist.",
   );
   return lines.join("\n");
 }
@@ -234,8 +234,8 @@ function buildSearchContext(query, data) {
   }
   lines.push(
     "",
-    "Answer Jordan using this current information as the source of truth. Keep it natural and " +
-      "concise, and don't dump raw URLs unless he asks for the link.",
+    "Answer using this current information as the source of truth. Keep it natural and " +
+      "concise, and don't dump raw URLs unless asked for the link.",
   );
   return lines.join("\n");
 }

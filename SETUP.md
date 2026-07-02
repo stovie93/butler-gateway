@@ -193,7 +193,7 @@ they're allow-listed. Add this at the **top level** of `openclaw.json`:
     "pc_action", "pc_power",
     "set_reminder", "list_reminders", "cancel_reminder",
     "remember", "recall", "forget",
-    "notify_jordan",
+    "notify_owner",
     "run_command"
   ]
 }
@@ -383,10 +383,10 @@ Hit **Test**, save, and you're live.
 ## Notes & gotchas
 
 - **Plugin tools vanish?** You forgot `tools.alsoAllow` (step 4). This is the #1 setup trap.
-- **Owner name:** several built-in prompts and one tool name (`notify_jordan`) currently
-  address the owner as "Jordan" — a config-driven owner name is on the roadmap. Everything
-  works regardless; the model just knows its human by that name unless you edit the persona
-  from the app's Persona screen and adjust the heartbeat prompt text.
+- **Owner name:** set **your name** in the app's Persona screen (stored as `owner` in
+  `~/.openclaw/workspace/persona.json`). Every plugin reads it from there — memories are
+  captured as "«you» is allergic to…", the awareness block says "On «you»'s PC", journals
+  and nudges use it. Until it's set, everything falls back to generic wording.
 - **Sleep:** the watcher blocks sleep only while a build (or an `/awake` hold) is active. It
   can't *wake* a machine that has already slept — on Wi-Fi-only S3 hardware there's no
   remote wake. Use `/awake 2h` before you step away, or raise the idle-sleep timeout

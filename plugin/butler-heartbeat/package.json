@@ -1,7 +1,7 @@
 {
   "name": "butler-heartbeat",
   "version": "1.0.0",
-  "description": "Scheduled agent check-ins that push to the phone, plus a notify_jordan tool for unprompted messages.",
+  "description": "Scheduled agent check-ins that push to the phone, plus a notify_owner tool for unprompted messages.",
   "type": "module",
   "scripts": {
     "test": "node --test"

@@ -11,8 +11,8 @@ import { join } from "node:path";
 //   • the clock         — current local date/time (she has no clock otherwise,
 //                          so she can't reason about "tonight" / reminder timing)
 //   • live state        — running build jobs + pending reminders (so she knows
-//                          what's happening on Jordan's PC without asking)
-//   • auto-recall       — top semantic memory hits for Jordan's latest message,
+//                          what's happening on the PC without asking)
+//   • auto-recall       — top semantic memory hits for the user's latest message,
 //                          so she actually *knows him* every turn with no
 //                          dependence on her calling the `recall` tool
 //
@@ -198,7 +198,8 @@ async function recallFor(prompt) {
 
 // ---- context assembly (pure, unit-testable) --------------------------------
 
-function buildAwareness({ now = new Date(), reminders = [], jobs = [], memories = [] } = {}) {
+function buildAwareness({ now = new Date(), reminders = [], jobs = [], memories = [], owner = "" } = {}) {
+  const who = String(owner ?? "").trim();
   const lines = ["# Right now", `The current local date & time is ${formatNow(now)}.`];
 
   const state = [];
@@ -211,19 +212,26 @@ function buildAwareness({ now = new Date(), reminders = [], jobs = [], memories 
     const next = reminders[0];
     state.push(`${reminders.length} reminder${reminders.length === 1 ? "" : "s"} pending; next: "${String(next.text).slice(0, 60)}" ${relativeLabel(next.fireAt, now.getTime())}.`);
   }
-  if (state.length) lines.push("", "# On Jordan's PC", ...state.map((s) => `- ${s}`));
+  if (state.length) lines.push("", who ? `# On ${who}'s PC` : "# On this PC", ...state.map((s) => `- ${s}`));
 
   if (memories.length) {
     lines.push(
       "",
-      "# What you know about Jordan (auto-recalled for his latest message)",
+      `# What you know about ${who || "your human"} (auto-recalled for their latest message)`,
       ...memories.map((m) => `- ${m}`),
       "Weave anything relevant in naturally, as something you simply know. Don't recite this list " +
-        "back unless he asks what you remember, and never mention memory files, sources, or that this " +
+        "back unless asked what you remember, and never mention memory files, sources, or that this " +
         "was \"recalled\" — just know it.",
     );
   }
   return lines.join("\n");
+}
+
+// The owner's name from the app's Persona editor (persona.json `owner`).
+function ownerName() {
+  const p = readJson(join(HOME, ".openclaw", "workspace", "persona.json"));
+  const o = typeof p?.owner === "string" ? p.owner.trim() : "";
+  return o || "";
 }
 
 export { buildAwareness, formatNow, relativeLabel };
@@ -251,7 +259,7 @@ export default {
         let memories = [];
         try { memories = await recallFor(recallQuery(event?.prompt, event?.messages)); } catch {}
 
-        return { prependSystemContext: buildAwareness({ now: new Date(), reminders, jobs, memories }) };
+        return { prependSystemContext: buildAwareness({ now: new Date(), reminders, jobs, memories, owner: ownerName() }) };
       } catch {
         return; // never break prompt assembly
       }

@@ -4,14 +4,14 @@ import { join } from "node:path";
 
 // Butler heartbeat: the butler wakes up on a schedule, looks at the world (the
 // awareness inject gives every turn the clock, PC state, and memories), and
-// decides whether Jordan should hear about it. Two pieces:
+// decides whether the owner should hear about it. Two pieces:
 //
 //  1. Scheduled beats — config entries fire an agent turn over the gateway's
 //     own /v1 chat endpoint (loopback, fresh session per beat). The reply is
 //     pushed to the phone; in "decide" mode the model can stay silent by
 //     answering HEARTBEAT_OK. Same harness-acts pattern as the other plugins:
 //     the schedule and delivery are deterministic, only the words are the model's.
-//  2. notify_jordan tool — an unprompted voice. Any turn (heartbeat or normal
+//  2. notify_owner tool — an unprompted voice. Any turn (heartbeat or normal
 //     chat) can push a message to the phone when something matters now.
 
 const HOME = homedir();
@@ -40,15 +40,25 @@ const DEFAULT_ENTRIES = [
     id: "morning-briefing",
     at: "08:00",
     mode: "always",
-    title: "Clawdia ☀️",
+    title: "☀️ Morning briefing",
     prompt:
-      "Good morning! This is your scheduled morning heartbeat — Jordan hasn't messaged you; " +
+      "Good morning! This is your scheduled morning heartbeat — your human hasn't messaged you; " +
       "you're checking in on your own. Using what you can see right now (the time, anything " +
-      "running on the PC, pending reminders, what you know about Jordan), write him a short, " +
+      "running on the PC, pending reminders, what you remember about them), write them a short, " +
       "warm good-morning message for the day ahead: anything due today, anything that finished " +
       "or failed overnight, and one friendly line. Keep it under 80 words, plain text, no markdown.",
   },
 ];
+
+// The butler's own name + the owner's name, both set in the app's Persona
+// editor (persona.json). Used for push titles and the notify tool's wording.
+function personaNames() {
+  const p = readJson(join(HOME, ".openclaw", "workspace", "persona.json"));
+  return {
+    butler: (typeof p?.name === "string" && p.name.trim()) || "Butler",
+    owner: (typeof p?.owner === "string" && p.owner.trim()) || "",
+  };
+}
 
 // ---- small io helpers -------------------------------------------------------
 
@@ -234,7 +244,7 @@ async function runBeat(entry) {
     const reply = await runTurn(entry);
     const { deliver, body } = shouldDeliver(reply, entry.mode);
     if (deliver) {
-      const pushed = await sendNotify(entry.title || "Clawdia", body);
+      const pushed = await sendNotify(entry.title || personaNames().butler, body);
       log({ id: entry.id, status: pushed ? "delivered" : "push-failed", chars: body.length, ms: Date.now() - started });
       return { ok: true, delivered: pushed, chars: body.length };
     }
@@ -276,21 +286,23 @@ function readBody(req) {
 export default {
   id: "butler-heartbeat",
   name: "Butler Heartbeat",
-  description: "Scheduled agent check-ins that push to the phone, plus a notify_jordan tool for unprompted messages.",
+  description: "Scheduled agent check-ins that push to the phone, plus a notify_owner tool for unprompted messages.",
   configSchema: { parse: (value) => value ?? {}, safeParse: (value) => ({ success: true, data: value ?? {} }) },
   register(api) {
     ensureDir();
     if (!sweepTimer) sweepTimer = setInterval(() => sweep().catch(() => {}), SWEEP_MS);
 
-    // The unprompted voice: any turn can decide Jordan should hear something now.
+    // The unprompted voice: any turn can decide the owner should hear something now.
     if (typeof api.registerTool === "function") {
+      const names = personaNames();
+      const ownerRef = names.owner || "your human";
       api.registerTool({
-        name: "notify_jordan",
+        name: "notify_owner",
         description:
-          "Send a push notification to Jordan's phone right now. Use this when something genuinely " +
-          "matters in the moment — a job finished or failed, something he asked to be told about, " +
-          "or anything time-sensitive he'd want to know even if he isn't looking at the chat. " +
-          "Keep the message short; it appears on his lock screen.",
+          `Send a push notification to ${ownerRef}'s phone right now. Use this when something genuinely ` +
+          "matters in the moment — a job finished or failed, something they asked to be told about, " +
+          "or anything time-sensitive they'd want to know even if they aren't looking at the chat. " +
+          "Keep the message short; it appears on their lock screen.",
         parameters: {
           type: "object",
           properties: {
@@ -303,8 +315,8 @@ export default {
         async execute(_id, params) {
           const body = String(params?.message ?? "").trim().slice(0, MAX_PUSH_CHARS);
           if (!body) return { content: [{ type: "text", text: "Nothing to send — message was empty." }] };
-          const ok = await sendNotify(String(params?.title ?? "").trim() || "Clawdia", body);
-          return { content: [{ type: "text", text: ok ? "Sent — it's on Jordan's phone." : "Couldn't send the push (gateway notify failed)." }] };
+          const ok = await sendNotify(String(params?.title ?? "").trim() || personaNames().butler, body);
+          return { content: [{ type: "text", text: ok ? "Sent — it's on their phone." : "Couldn't send the push (gateway notify failed)." }] };
         },
       });
     }

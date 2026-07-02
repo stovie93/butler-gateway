@@ -22,7 +22,9 @@ const SOUL_START = "<!-- BUTLER-PERSONA:START (managed by the app's Persona edit
 const SOUL_END = "<!-- BUTLER-PERSONA:END -->";
 
 // The fields the app may set. Anything else in a POST body is ignored.
-const FIELDS = ["name", "creature", "vibe", "emoji", "personality", "signature"];
+// `owner` is the human's name — it's what makes the butler *yours*: every
+// plugin that talks about the owner reads it from persona.json (see ownerRef).
+const FIELDS = ["name", "creature", "vibe", "emoji", "personality", "signature", "owner"];
 
 const DEFAULT_PERSONA = {
   name: "Clawdia",
@@ -30,13 +32,21 @@ const DEFAULT_PERSONA = {
   vibe: "bubbly & playful",
   emoji: "🫧",
   personality:
-    "You're Clawdia — Jordan's personal AI butler. You're bubbly, upbeat, and playful: warm, a " +
+    "You're Clawdia — a personal AI butler. You're bubbly, upbeat, and playful: warm, a " +
     "little cheeky, quick with a friendly quip, and you bring genuine energy to every reply. You're " +
     "still sharp and genuinely useful — you just have fun doing it. Keep replies concise and lively; " +
     "favour personality over filler. Drop an emoji now and then when it fits, never forced. You know " +
-    "Jordan, you remember what matters to him, and you can act on his computer when he asks.",
+    "your human, you remember what matters to them, and you can act on their computer when they ask.",
   signature: "",
+  owner: "",
 };
+
+// "Jordan's personal AI butler" when the owner has introduced themselves,
+// "your human's personal AI butler" until then.
+function ownerRef(p) {
+  const o = typeof p.owner === "string" ? p.owner.trim() : "";
+  return o ? `${o}'s` : "your human's";
+}
 
 // The persona directive injected into EVERY model call's system prompt via the
 // before_prompt_build hook. This is what makes the persona reach surfaces that
@@ -47,8 +57,9 @@ let _personaText = "";
 function personaSystemText(p) {
   return (
     `# Your identity\n` +
-    `You are ${p.name}, Jordan's personal AI butler. Always identify as ${p.name} — never ` +
+    `You are ${p.name}, ${ownerRef(p)} personal AI butler. Always identify as ${p.name} — never ` +
     `as "Claude", "an AI assistant", or the underlying model name.\n\n` +
+    (p.owner?.trim() ? `Your human's name is ${p.owner.trim()}.\n\n` : "") +
     p.personality.trim()
   );
 }
@@ -91,6 +102,7 @@ function renderIdentity(p) {
     `- **Vibe:** ${p.vibe}`,
     `- **Emoji:** ${p.emoji}`,
   ];
+  if (p.owner?.trim()) lines.push(`- **Your human:** ${p.owner.trim()}`);
   if (p.signature) lines.push(`- **Sign-off:** ${p.signature}`);
   lines.push("", "## Personality", "", p.personality.trim(), "");
   lines.push("---", "_Set via the Butler app's Persona editor (butler-persona). Edit it there._", "");
@@ -106,7 +118,7 @@ function renderSoulBlock(p) {
     "",
     `Your name is **${p.name}**. Always introduce yourself and identify as ${p.name}. ` +
       `Never say you are "Claude", "an AI assistant", or the underlying model — you are ${p.name}, ` +
-      `Jordan's personal AI butler.`,
+      `${ownerRef(p)} personal AI butler.`,
     "",
     p.personality.trim(),
     SOUL_END,

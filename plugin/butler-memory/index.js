@@ -3,12 +3,12 @@ import { writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, exist
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-// Butler memory: a curated, durable memory of who Jordan is and what he does.
+// Butler memory: a curated, durable memory of who the owner is and what they do.
 // Each fact is a small markdown file under the OpenClaw workspace `memory/`
 // directory, which is the indexed source for the gateway's vector recall — so a
 // remembered fact is automatically surfaced in conversation (and is searchable
 // on demand). Both the butler (via the `remember` tool, mid-conversation) and
-// Jordan (via the app / `/remember` command) can write memories; everything is
+// The owner (via the app / `/remember` command) can write memories; everything is
 // reviewable and deletable. Three surfaces: the remember/recall/forget agent
 // tools, the /remember /recall /forget commands, and an HTTP route for the app.
 
@@ -70,6 +70,15 @@ function loadConfig() {
     // chat right away. Default on; turn off to batch reindexing manually.
     reindexOnWrite: c.reindexOnWrite !== false,
   };
+}
+
+// The owner's name, as set in the app's Persona editor (persona.json `owner`).
+// Captured facts read much better as "Jordan is allergic to…" than "The user
+// is allergic to…", so every fact template goes through this.
+function ownerName() {
+  const p = readJson(join(HOME, ".openclaw", "workspace", "persona.json"));
+  const o = typeof p?.owner === "string" ? p.owner.trim() : "";
+  return o || null;
 }
 
 // Sortable id: yyyymmdd-HHMMSSmmm + random suffix (lexicographic == chronological).
@@ -141,7 +150,7 @@ function matchId(memories, key) {
 // ---- guaranteed capture (deterministic, harness-side) ----------------------
 
 // A weak local model frequently FAILS to call the `remember` tool even when
-// Jordan explicitly asks it to ("remember that my cat is Pixel"). So we also
+// the user explicitly asks it to ("remember that my cat is Pixel"). So we also
 // catch the obvious "save this" intents deterministically in the prompt hook
 // and guarantee the write — the same "harness acts, model just talks" pattern
 // the rest of the butler leans on. Conservative on purpose: only fires on an
@@ -175,7 +184,7 @@ function extractCaptureFact(prompt) {
 // ---- passive capture (durable facts mentioned in passing) ------------------
 
 // Beyond explicit "remember…" intents, pick up high-confidence durable facts
-// Jordan states in passing ("I'm allergic to peanuts", "my dog is named Rex")
+// the user states in passing ("I'm allergic to peanuts", "my dog is named Rex")
 // so memory compounds on its own. Deliberately HIGH-PRECISION: a curated set of
 // first-person patterns, each guarded against generic/pronoun objects, because
 // a wrong "remembered" fact is worse than a missed one. Saved tagged "auto" so
@@ -198,36 +207,38 @@ function objOrNull(s) {
 }
 
 const PASSIVE_PATTERNS = [
-  { re: /\b(?:i'?m|i am) allergic to (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan is allergic to ${o}.`; } },
+  { re: /\b(?:i'?m|i am) allergic to (.+?)(?:[.,!?]|$)/i, f: (m, who) => { const o = objOrNull(m[1]); return o && `${who} is allergic to ${o}.`; } },
   {
     re: /\bmy (wife|husband|partner|girlfriend|boyfriend|fianc[ée]+|son|daughter|kid|child|baby|dog|cat|pet|boss|manager|mum|mom|dad|father|mother|brother|sister|roommate|flatmate)(?:'?s)?(?: name)? (?:is|are) (?:named |called )?([A-Za-z][\w'’-]{1,28})/i,
-    f: (m) => {
+    f: (m, who) => {
       const name = cleanObj(m[2]);
       if (!name) return null;
       // Without an explicit "named/called", require a capitalized name so
       // "my dog is huge" / "my boss is great" don't become false facts.
       const explicit = /\b(?:named|called)\s/i.test(m[0]);
       if (!explicit && !/^[A-Z]/.test(name)) return null;
-      return `Jordan's ${m[1].toLowerCase()} is named ${name}.`;
+      return `${who}'s ${m[1].toLowerCase()} is named ${name}.`;
     },
   },
-  { re: /\bmy birthday(?:'s| is)(?: on)? (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan's birthday is ${o}.`; } },
-  { re: /\b(?:i live|i'?m living|i am living) in (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan lives in ${o}.`; } },
-  { re: /\b(?:i'?m|i am) from (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan is from ${o}.`; } },
-  { re: /\b(?:i work|i'?m working|i am working) (?:at|for) (.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan works at ${o}.`; } },
-  { re: /\b(?:i work|i'?m working|i am working) as (?:an? )?(.+?)(?:[.,!?]|$)/i, f: (m) => { const o = objOrNull(m[1]); return o && `Jordan works as ${o}.`; } },
-  { re: /\bmy favou?rite (.+?) is (.+?)(?:[.,!?]|$)/i, f: (m) => { const a = objOrNull(m[1]), b = objOrNull(m[2]); return a && b && `Jordan's favourite ${a} is ${b}.`; } },
+  { re: /\bmy birthday(?:'s| is)(?: on)? (.+?)(?:[.,!?]|$)/i, f: (m, who) => { const o = objOrNull(m[1]); return o && `${who}'s birthday is ${o}.`; } },
+  { re: /\b(?:i live|i'?m living|i am living) in (.+?)(?:[.,!?]|$)/i, f: (m, who) => { const o = objOrNull(m[1]); return o && `${who} lives in ${o}.`; } },
+  { re: /\b(?:i'?m|i am) from (.+?)(?:[.,!?]|$)/i, f: (m, who) => { const o = objOrNull(m[1]); return o && `${who} is from ${o}.`; } },
+  { re: /\b(?:i work|i'?m working|i am working) (?:at|for) (.+?)(?:[.,!?]|$)/i, f: (m, who) => { const o = objOrNull(m[1]); return o && `${who} works at ${o}.`; } },
+  { re: /\b(?:i work|i'?m working|i am working) as (?:an? )?(.+?)(?:[.,!?]|$)/i, f: (m, who) => { const o = objOrNull(m[1]); return o && `${who} works as ${o}.`; } },
+  { re: /\bmy favou?rite (.+?) is (.+?)(?:[.,!?]|$)/i, f: (m, who) => { const a = objOrNull(m[1]), b = objOrNull(m[2]); return a && b && `${who}'s favourite ${a} is ${b}.`; } },
 ];
 
 // Pull a single high-confidence durable fact out of a passing statement, or
-// null. Skips questions outright. Pure + unit-tested.
-function extractPassiveFact(prompt) {
+// null. Skips questions outright. Pure + unit-tested; `owner` is the human's
+// name from the Persona editor (falls back to a generic subject).
+function extractPassiveFact(prompt, owner) {
   const raw = String(prompt ?? "").replace(/\s+/g, " ").trim();
   if (!raw || raw.includes("?")) return null;
+  const who = String(owner ?? "").trim() || "The user";
   for (const { re, f } of PASSIVE_PATTERNS) {
     const m = raw.match(re);
     if (m) {
-      const fact = f(m);
+      const fact = f(m, who);
       if (fact && fact.length >= 8 && fact.length <= 200) return fact;
     }
   }
@@ -328,7 +339,7 @@ function addMemory(text, { tags = [], source = "butler" } = {}) {
 }
 
 // ---- session journal ---------------------------------------------------------
-// When Jordan clears a chat, the app first sends the transcript here. We have
+// When the user clears a chat, the app first sends the transcript here. We have
 // the local model write a short journal entry and save it as a memory, so the
 // next conversation can recall what the last one was about — continuity across
 // the session rotation instead of a clean lobotomy.
@@ -338,8 +349,10 @@ const JOURNAL_MSG_CHARS = 400;
 const JOURNAL_MIN_MESSAGES = 4;
 
 // Render a transcript for the summarizer. Pure + unit-tested. Null when the
-// conversation is too thin to be worth a journal entry.
-export function buildJournalPrompt(messages) {
+// conversation is too thin to be worth a journal entry. `owner` is the human's
+// name from the Persona editor.
+export function buildJournalPrompt(messages, owner) {
+  const who = String(owner ?? "").trim() || "Your human";
   const turns = (Array.isArray(messages) ? messages : [])
     .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
     .map((m) => ({
@@ -351,10 +364,10 @@ export function buildJournalPrompt(messages) {
   if (turns.length < JOURNAL_MIN_MESSAGES) return null;
   const transcript = turns
     .slice(-JOURNAL_MAX_MESSAGES)
-    .map((m) => `${m.role === "user" ? "Jordan" : "You"}: ${m.text.slice(0, JOURNAL_MSG_CHARS)}`)
+    .map((m) => `${m.role === "user" ? who : "You"}: ${m.text.slice(0, JOURNAL_MSG_CHARS)}`)
     .join("\n");
   return (
-    "Jordan just closed this conversation. Write your private journal entry for it: 2-4 plain " +
+    `${who} just closed this conversation. Write your private journal entry for it: 2-4 plain ` +
     "sentences, past tense, capturing what it was about, anything decided or accomplished, and " +
     "any detail worth knowing in future conversations. No greetings, no markdown, no preamble — " +
     "output only the journal entry itself.\n\n--- conversation ---\n" +
@@ -397,7 +410,7 @@ async function summarizeTranscript(prompt) {
 }
 
 async function journalConversation(messages) {
-  const prompt = buildJournalPrompt(messages);
+  const prompt = buildJournalPrompt(messages, ownerName());
   if (!prompt) return { ok: true, skipped: true, reason: "conversation too short" };
   const summary = await summarizeTranscript(prompt);
   if (!summary) return { ok: false, error: "summarizer unavailable" };
@@ -479,7 +492,7 @@ export default {
   register(api) {
     _cfg = loadConfig();
 
-    // Guaranteed capture: when Jordan explicitly asks to remember a fact, save
+    // Guaranteed capture: when the user explicitly asks to remember a fact, save
     // it deterministically even if the model never calls the `remember` tool.
     // Runs on every prompt build; the trigger regex short-circuits instantly for
     // ordinary messages, so it's effectively free when there's nothing to catch.
@@ -498,7 +511,7 @@ export default {
         try {
           if (!isInteractive(ctx)) return;
           // Explicit "remember…" wins; otherwise try a high-confidence passing fact.
-          const fact = extractCaptureFact(event?.prompt) || extractPassiveFact(event?.prompt);
+          const fact = extractCaptureFact(event?.prompt) || extractPassiveFact(event?.prompt, ownerName());
           if (!fact) return;
           const key = fact.toLowerCase().slice(0, 80);
           const now = Date.now();
@@ -515,7 +528,7 @@ export default {
     }
 
     if (typeof api.registerTool === "function") {
-      // The butler calls this on its own when Jordan shares something worth
+      // The butler calls this on its own when the user shares something worth
       // keeping ("I work nights", "my dog's name is Rex", a preference, a goal).
       api.registerTool({
         name: "remember",
@@ -627,7 +640,7 @@ export default {
       },
     });
 
-    // Typed chat commands (WhatsApp / chat). Jordan-sourced memories.
+    // Typed chat commands (WhatsApp / chat). Owner-sourced memories.
     api.registerCommand({
       name: "remember",
       description: "Remember a fact: /remember <fact> (e.g. /remember I prefer concise replies).",

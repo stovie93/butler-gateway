@@ -12,29 +12,36 @@ test("buildJournalPrompt renders a transcript and skips thin conversations", () 
     ]),
     null, // under the minimum turn count
   );
-  const prompt = buildJournalPrompt([
+  const turns = [
     { role: "user", content: "plan my trip to Denver" },
     { role: "assistant", content: "Sure! Here's an idea [[BUILD: project=x | task=y]] [[ASK: question=z]]" },
     { role: "user", content: "book the museum for Saturday" },
     { role: "assistant", content: "Done — Saturday it is." },
     { role: "assistant", content: "", pending: true }, // empty bubbles dropped
-  ]);
+  ];
+  const prompt = buildJournalPrompt(turns, "Jordan");
   assert.match(prompt, /journal entry/);
   assert.match(prompt, /Jordan: plan my trip to Denver/);
   assert.match(prompt, /You: Done — Saturday it is\./);
   assert.ok(!prompt.includes("[[BUILD"), "build marker stripped");
   assert.ok(!prompt.includes("[[ASK"), "ask marker stripped");
+  // No owner configured → generic labels, never a hardcoded name.
+  const anon = buildJournalPrompt(turns);
+  assert.match(anon, /Your human: plan my trip to Denver/);
+  assert.ok(!anon.includes("Jordan"));
 });
 
 test("extractPassiveFact captures high-confidence durable facts", () => {
-  assert.equal(extractPassiveFact("oh by the way I'm allergic to peanuts"), "Jordan is allergic to peanuts.");
-  assert.equal(extractPassiveFact("heads up — I am allergic to shellfish"), "Jordan is allergic to shellfish.");
-  assert.equal(extractPassiveFact("I'm working at Pixar now"), "Jordan works at Pixar.");
-  assert.equal(extractPassiveFact("my dog is named Rex and he's huge"), "Jordan's dog is named Rex.");
-  assert.equal(extractPassiveFact("my wife's name is Sarah"), "Jordan's wife is named Sarah.");
-  assert.equal(extractPassiveFact("I live in Denver"), "Jordan lives in Denver.");
-  assert.equal(extractPassiveFact("I work at Lockheed Martin these days"), "Jordan works at Lockheed Martin.");
-  assert.equal(extractPassiveFact("my favourite team is Arsenal"), "Jordan's favourite team is Arsenal.");
+  assert.equal(extractPassiveFact("oh by the way I'm allergic to peanuts", "Jordan"), "Jordan is allergic to peanuts.");
+  assert.equal(extractPassiveFact("heads up — I am allergic to shellfish", "Jordan"), "Jordan is allergic to shellfish.");
+  assert.equal(extractPassiveFact("I'm working at Pixar now", "Jordan"), "Jordan works at Pixar.");
+  assert.equal(extractPassiveFact("my dog is named Rex and he's huge", "Jordan"), "Jordan's dog is named Rex.");
+  assert.equal(extractPassiveFact("my wife's name is Sarah", "Jordan"), "Jordan's wife is named Sarah.");
+  assert.equal(extractPassiveFact("I live in Denver", "Jordan"), "Jordan lives in Denver.");
+  assert.equal(extractPassiveFact("I work at Lockheed Martin these days", "Jordan"), "Jordan works at Lockheed Martin.");
+  assert.equal(extractPassiveFact("my favourite team is Arsenal", "Jordan"), "Jordan's favourite team is Arsenal.");
+  // No owner configured → generic subject, never a hardcoded name.
+  assert.equal(extractPassiveFact("I live in Denver"), "The user lives in Denver.");
 });
 
 test("extractPassiveFact rejects generic/pronoun objects and questions (precision)", () => {

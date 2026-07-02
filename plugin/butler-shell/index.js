@@ -85,8 +85,8 @@ export function formatResult(r) {
 
 // ---- the gate + the hands -----------------------------------------------------
 
-// Ask butler-approvals to put the exact command on Jordan's phone and block
-// until he decides. Anything but an explicit allow — deny, timeout, relay
+// Ask butler-approvals to put the exact command on the owner's phone and block
+// until they decide. Anything but an explicit allow — deny, timeout, relay
 // unreachable — reads as false. Fail closed, always.
 async function requireApproval(command, cwd) {
   const { token, port } = gatewayAuth();
@@ -149,7 +149,7 @@ async function gatedRun(rawCommand, rawCwd) {
   const approved = await requireApproval(v.command, cwd);
   if (!approved) {
     audit({ command: v.command, cwd, decision: "denied" });
-    return { ok: true, denied: true, text: "Jordan denied it (or didn't answer in time) — the command did not run." };
+    return { ok: true, denied: true, text: "The user denied it (or didn't answer in time) — the command did not run." };
   }
 
   const result = await execCommand(v.command, { cwd, timeoutMs: cfg.timeoutMs, maxOutputChars: cfg.maxOutputChars });

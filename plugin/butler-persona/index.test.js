@@ -50,6 +50,16 @@ test("renderSoulBlock forces the name + identity", () => {
   assert.match(block, /Never say you are "Claude"/);
 });
 
+test("owner name flows through when set and falls back generically when not", () => {
+  assert.ok(FIELDS.includes("owner"));
+  const merged = mergePersona(DEFAULT_PERSONA, { owner: "Jordan" });
+  assert.equal(merged.owner, "Jordan");
+  assert.match(renderSoulBlock(merged), /Jordan's personal AI butler/);
+  assert.match(renderSoulBlock(DEFAULT_PERSONA), /your human's personal AI butler/);
+  assert.match(renderIdentity(merged), /\*\*Your human:\*\* Jordan/);
+  assert.doesNotMatch(renderIdentity(DEFAULT_PERSONA), /Your human/);
+});
+
 test("upsertSoulBlock prepends a block, preserving existing content", () => {
   const soul = "# SOUL.md\n\nCore truths here.\n";
   const out = upsertSoulBlock(soul, renderSoulBlock(DEFAULT_PERSONA));
