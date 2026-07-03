@@ -370,7 +370,8 @@ the answer should arrive only after you approve.
 
 ## 11. Point the apps at it
 
-In **butler-app** (phone) or **butler-desktop**, open Settings and enter:
+In **butler-app** (phone), the first-run setup wizard asks for these (rerun it from
+Settings → 🚀 Setup wizard); in **butler-desktop**, open Settings and enter:
 
 - **Gateway URL** — `https://<your-pc>.<tailnet>.ts.net` (or `http://127.0.0.1:18789` on the
   PC itself / `http://<lan-ip>:18789` on the same network)
