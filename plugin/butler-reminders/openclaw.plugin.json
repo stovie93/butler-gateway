@@ -31,7 +31,7 @@
       },
       "whatsappTarget": {
         "type": "string",
-        "description": "WhatsApp recipient (e.g. +14359942435) for reminder messages. No target = WhatsApp disabled."
+        "description": "WhatsApp recipient (e.g. +15551234567) for reminder messages. No target = WhatsApp disabled."
       }
     }
   },
