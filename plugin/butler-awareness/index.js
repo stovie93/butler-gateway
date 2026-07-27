@@ -96,14 +96,46 @@ function pendingReminders() {
     .sort((a, b) => a.fireAt - b.fireAt);
 }
 
-// Currently-running build jobs (cheap local file reads).
-function runningJobs() {
+// How far back a finished build still counts as news worth mentioning.
+const RECENT_BUILD_MS = 6 * 3_600_000;
+
+function jobMetas() {
   if (!existsSync(JOBS_DIR)) return [];
   return readdirSync(JOBS_DIR)
     .filter((f) => f.endsWith(".json"))
     .map((f) => readJson(join(JOBS_DIR, f)))
-    .filter((m) => m && m.status === "running")
-    .map((m) => ({ project: m.project ? String(m.project).split(/[\\/]/).pop() : "?", task: m.task ?? "" }));
+    .filter(Boolean);
+}
+
+function projectOf(m) {
+  return m.project ? String(m.project).split(/[\\/]/).pop() : "?";
+}
+
+// Currently-running build jobs (cheap local file reads).
+function runningJobs(metas = jobMetas()) {
+  return metas
+    .filter((m) => m.status === "running")
+    .map((m) => ({ project: projectOf(m), task: m.task ?? "" }));
+}
+
+// Builds that landed recently. Without this the model has no idea a build ever
+// finished — a job drops out of context the moment it stops running, which is
+// exactly when the owner starts asking about it.
+function finishedJobs(metas = jobMetas(), now = Date.now()) {
+  return metas
+    .filter((m) => m.status && m.status !== "running")
+    .filter((m) => {
+      const t = Date.parse(m.finished ?? "");
+      return Number.isFinite(t) && now - t < RECENT_BUILD_MS;
+    })
+    .sort((a, b) => Date.parse(b.finished) - Date.parse(a.finished))
+    .slice(0, 3)
+    .map((m) => ({
+      project: projectOf(m),
+      status: m.status,
+      artifact: m.artifact?.type === "apk" ? m.artifact.name : null,
+      fileCount: Array.isArray(m.files) ? m.files.length : 0,
+    }));
 }
 
 // ---- memory recall (CLI vector search, same bridge butler-memory uses) ------
@@ -198,7 +230,7 @@ async function recallFor(prompt) {
 
 // ---- context assembly (pure, unit-testable) --------------------------------
 
-function buildAwareness({ now = new Date(), reminders = [], jobs = [], memories = [], owner = "" } = {}) {
+function buildAwareness({ now = new Date(), reminders = [], jobs = [], finished = [], memories = [], owner = "" } = {}) {
   const who = String(owner ?? "").trim();
   const lines = ["# Right now", `The current local date & time is ${formatNow(now)}.`];
 
@@ -207,6 +239,14 @@ function buildAwareness({ now = new Date(), reminders = [], jobs = [], memories 
     state.push(jobs.length === 1
       ? `A build is running: ${jobs[0].project}.`
       : `${jobs.length} builds are running (${jobs.map((j) => j.project).slice(0, 3).join(", ")}).`);
+  }
+  for (const f of finished) {
+    const extra = f.artifact
+      ? ` It produced an installable APK (${f.artifact}) — they can install it from the app's Activity screen.`
+      : f.fileCount
+        ? ` It changed ${f.fileCount} file${f.fileCount === 1 ? "" : "s"}.`
+        : "";
+    state.push(`A build of ${f.project} recently ${f.status === "done" ? "finished successfully" : f.status}.${extra}`);
   }
   if (reminders.length) {
     const next = reminders[0];
@@ -251,15 +291,21 @@ export default {
         // Clock + live state are instant local reads; never let them throw.
         let reminders = [];
         let jobs = [];
+        let finished = [];
         try { reminders = pendingReminders(); } catch {}
-        try { jobs = runningJobs(); } catch {}
+        // One directory read feeds both the running and the recently-finished lists.
+        try {
+          const metas = jobMetas();
+          jobs = runningJobs(metas);
+          finished = finishedJobs(metas);
+        } catch {}
 
         // Auto-recall is best-effort and time-boxed; on miss we still ship the
         // clock + state, so a slow index can never stall or blank the reply.
         let memories = [];
         try { memories = await recallFor(recallQuery(event?.prompt, event?.messages)); } catch {}
 
-        return { prependSystemContext: buildAwareness({ now: new Date(), reminders, jobs, memories, owner: ownerName() }) };
+        return { prependSystemContext: buildAwareness({ now: new Date(), reminders, jobs, finished, memories, owner: ownerName() }) };
       } catch {
         return; // never break prompt assembly
       }

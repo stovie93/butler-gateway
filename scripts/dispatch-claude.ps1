@@ -64,33 +64,35 @@ try {
     `$m0 | Add-Member -NotePropertyName runnerPid -NotePropertyValue `$PID -Force
     `$m0 | ConvertTo-Json | Set-Content '$jobsDir\$id.json' -Encoding utf8
 } catch {}
+# Claude Code writes UTF-8. Without these two lines PowerShell 5.1 decodes its
+# stdout using the console's OEM codepage, so every em-dash and arrow in the
+# summary lands in the log as mojibake (— becomes ΓÇö) and stays corrupted for
+# good. Set both directions: OutputEncoding for what we read back, `$OutputEncoding
+# for the task text we pipe in.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+`$OutputEncoding = [System.Text.Encoding]::UTF8
 Get-Content '$taskFile' -Raw | claude -p $continueFlag --output-format stream-json --verbose --dangerously-skip-permissions *> '$log'
 `$code = `$LASTEXITCODE
 `$meta = Get-Content '$jobsDir\$id.json' -Raw | ConvertFrom-Json
 `$meta.status = if (`$code -eq 0) { 'done' } else { 'failed' }
 `$meta | Add-Member -NotePropertyName finished -NotePropertyValue (Get-Date -Format o) -Force
 `$meta | Add-Member -NotePropertyName exitCode -NotePropertyValue `$code -Force
-# Persist a summary from the final stream-json result event so the apps don't
-# have to re-parse the whole log on every poll. Best-effort: never block the status write.
-try {
-    `$resultLine = Get-Content '$log' -ErrorAction Stop | Where-Object { `$_ -match '"type":"result"' } | Select-Object -Last 1
-    if (`$resultLine) {
-        `$r = `$resultLine | ConvertFrom-Json
-        `$summary = [string]`$r.result
-        if (`$summary.Length -gt 500) { `$summary = `$summary.Substring(0, 500) + [char]0x2026 }
-        `$resObj = [pscustomobject]@{
-            durationMs = `$r.duration_ms
-            costUsd    = `$r.total_cost_usd
-            isError    = [bool]`$r.is_error
-            summary    = `$summary
-        }
-        `$meta | Add-Member -NotePropertyName result -NotePropertyValue `$resObj -Force
-    }
-} catch {}
 `$meta | ConvertTo-Json -Depth 5 | Set-Content '$jobsDir\$id.json' -Encoding utf8
-# Wake the butler so it reports the result to Jordan right away (WhatsApp/app).
-`$note = "SYSTEM EVENT: Claude Code job $id for project '$(Split-Path $proj -Leaf)' just finished with status `$(`$meta.status). Use the code-dispatch skill: check the job log, send Jordan a short plain-text summary of the outcome, then mark it reported."
-openclaw agent --agent main --message `$note *> "$jobsDir\$id.notify.log"
+# The result summary is parsed out of the log by the code-dispatch plugin during
+# jobFinished, not here: PowerShell 5.1 reads BOM-less UTF-8 as ANSI, which turned
+# every em-dash and arrow in Claude's summary into mojibake.
+# Hand the finished job to the code-dispatch plugin, which finds the build
+# artifact, asks the butler to describe the outcome in its own voice, and pushes
+# that to the phone. Everything past this point is JS, not escaped PowerShell.
+# Best-effort: the plugin also sweeps for unreported jobs, so a failed POST here
+# only costs latency, never the report.
+try {
+    `$cfg = Get-Content '$env:USERPROFILE\.openclaw\openclaw.json' -Raw | ConvertFrom-Json
+    `$gtok = `$cfg.gateway.auth.token
+    `$gport = if (`$cfg.gateway.port) { `$cfg.gateway.port } else { 18789 }
+    `$fbody = @{ action = 'jobFinished'; jobId = '$id' } | ConvertTo-Json
+    Invoke-RestMethod -Uri ("http://127.0.0.1:" + `$gport + "/api/v1/code-dispatch") -Method Post -Headers @{ Authorization = ('Bearer ' + `$gtok); 'Content-Type' = 'application/json' } -Body `$fbody -TimeoutSec 150 *> "$jobsDir\$id.notify.log"
+} catch {}
 "@
 $runnerFile = "$jobsDir\$id.runner.ps1"
 Set-Content $runnerFile $runner -Encoding utf8

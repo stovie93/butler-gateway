@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { createReadStream, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -9,9 +9,26 @@ const JOBS_DIR = join(WORKSPACE, "jobs");
 const HOLD_FILE = join(WORKSPACE, "keepawake-hold.json");
 const STATE_FILE = join(WORKSPACE, "keepawake-state.json");
 const AUDIT_FILE = join(WORKSPACE, "dispatch-audit.log");
+const CONFIG_FILE = join(homedir(), ".openclaw", "openclaw.json");
 
 // Terminal job states (a runner is no longer expected to be working).
 const TERMINAL = ["done", "failed", "canceled", "interrupted"];
+
+// How long to let the butler compose its own account of a finished build before
+// falling back to a deterministic one-liner.
+const REPORT_TIMEOUT_MS = 90_000;
+// A push body longer than this is truncated by Android anyway.
+const MAX_PUSH_CHARS = 900;
+// Safety net: how often to look for terminal jobs that never got reported
+// (runner killed, gateway restarted mid-finish, POST lost).
+const SWEEP_MS = 30_000;
+// Directories that never hold build output but cost a lot to walk.
+const SKIP_DIRS = new Set(["node_modules", ".git", ".gradle", ".expo", "vendor", "Pods", "dist", ".next"]);
+
+let sweepTimer = null;
+// Jobs currently being finalized, so the sweep and the runner's POST can't both
+// generate a report for the same job.
+const finalizing = new Set();
 
 // The owner's name from the app's Persona editor (persona.json `owner`), with
 // a generic fallback — tool descriptions and nudges read better with a name.
@@ -127,6 +144,14 @@ function listJobsData(limit = 30) {
       // Optional extras (older clients ignore unknown fields).
       exitCode: typeof m.exitCode === "number" ? m.exitCode : null,
       result: m.result ?? null,
+      // What the build left behind and what the butler said about it. `artifact`
+      // drops the on-disk path — the app downloads by job id, never by path.
+      artifact: m.artifact ? { type: m.artifact.type, name: m.artifact.name, size: m.artifact.size } : null,
+      files: m.files ?? null,
+      report: m.report ?? null,
+      reported: Boolean(m.reported),
+      // Live progress, only for jobs still working (parsing the log costs a read).
+      progress: m.status === "running" ? jobProgress(m.id) : null,
     });
   }
   return jobs;
@@ -182,23 +207,336 @@ function formatClaudeStream(text) {
   return result;
 }
 
-function jobLogTail(jobId, maxChars = 8000) {
+// Read a job log as text, whatever encoding the runner happened to write it in.
+// PowerShell's `*>` redirection writes UTF-16 LE; other writers use UTF-8.
+function readLogText(jobId) {
   const safe = String(jobId ?? "").replace(/[^0-9A-Za-z_-]/g, "");
-  if (!safe) return "";
-  const log = join(JOBS_DIR, `${safe}.log`);
+  if (!safe) return null;
+  let buf;
   try {
-    // PowerShell's `*>` redirection writes UTF-16 LE; other writers use UTF-8.
-    const buf = readFileSync(log);
-    let text;
-    if (buf[0] === 0xff && buf[1] === 0xfe) text = buf.toString("utf16le");
-    else if (buf[0] === 0xfe && buf[1] === 0xff) text = buf.swap16().toString("utf16le");
-    else text = buf.toString("utf8");
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-    const formatted = formatClaudeStream(text);
-    return formatted.length > maxChars ? "…" + formatted.slice(formatted.length - maxChars) : formatted || "(no output yet)";
+    buf = readFileSync(join(JOBS_DIR, `${safe}.log`));
   } catch {
-    return "(no log yet)";
+    return null;
   }
+  let text;
+  if (buf[0] === 0xff && buf[1] === 0xfe) text = buf.toString("utf16le");
+  else if (buf[0] === 0xfe && buf[1] === 0xff) text = buf.swap16().toString("utf16le");
+  else text = buf.toString("utf8");
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  return text;
+}
+
+// Pull the final `result` event out of a stream-json log. Done here rather than
+// in the runner because PowerShell 5.1's Get-Content reads BOM-less UTF-8 as
+// ANSI — every summary came back with em-dashes and arrows as mojibake.
+export function resultFrom(text) {
+  let last = null;
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const t = line.trim();
+    // Cheap pre-filter, then decide on the parsed shape — matching the exact
+    // string '"type":"result"' would miss any writer that pretty-prints.
+    if (!t || t[0] !== "{" || !t.includes("result")) continue;
+    let ev;
+    try {
+      ev = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (ev?.type === "result") last = ev;
+  }
+  if (!last) return null;
+  let summary = typeof last.result === "string" ? last.result.trim() : "";
+  if (summary.length > 500) summary = summary.slice(0, 500) + "…";
+  return {
+    durationMs: typeof last.duration_ms === "number" ? last.duration_ms : null,
+    costUsd: typeof last.total_cost_usd === "number" ? last.total_cost_usd : null,
+    isError: Boolean(last.is_error),
+    summary,
+  };
+}
+
+function jobLogTail(jobId, maxChars = 8000) {
+  const text = readLogText(jobId);
+  if (text === null) return "(no log yet)";
+  const formatted = formatClaudeStream(text);
+  return formatted.length > maxChars ? "…" + formatted.slice(formatted.length - maxChars) : formatted || "(no output yet)";
+}
+
+// ---- build artifacts ---------------------------------------------------------
+
+// Find the newest .apk under a project that this job could have produced.
+// Bounded walk: build outputs live shallow (android/app/build/outputs/apk/…),
+// so a depth cap covers every layout without wandering into dependency trees.
+function findApk(dir, sinceMs, depth = 0, best = null) {
+  if (depth > 8) return best;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return best;
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue;
+      best = findApk(join(dir, e.name), sinceMs, depth + 1, best);
+      continue;
+    }
+    if (!e.isFile() || !e.name.toLowerCase().endsWith(".apk")) continue;
+    const full = join(dir, e.name);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    // Only count APKs this job actually touched. An older one sitting in the
+    // repo isn't "what Claude just built" — 1s of slack for clock jitter.
+    if (st.mtimeMs + 1000 < sinceMs) continue;
+    if (!best || st.mtimeMs > best.mtimeMs) {
+      best = { path: full, name: e.name, size: st.size, mtimeMs: st.mtimeMs };
+    }
+  }
+  return best;
+}
+
+// The one thing a finished build can hand straight to a phone. Non-Android
+// projects return null and the report falls back to a summary + file list.
+function artifactFor(meta) {
+  const proj = meta?.project;
+  if (!proj || !existsSync(proj)) return null;
+  const since = Date.parse(meta.started ?? "") || 0;
+  const apk = findApk(proj, since);
+  if (!apk) return null;
+  return {
+    type: "apk",
+    name: apk.name,
+    path: apk.path,
+    size: apk.size,
+    builtAt: new Date(apk.mtimeMs).toISOString(),
+  };
+}
+
+// What the build actually changed on disk — the useful answer to "so what did
+// it do?" for every project that can't produce an installable.
+function changedFiles(proj) {
+  return new Promise((resolve) => {
+    if (!proj || !existsSync(proj)) return resolve([]);
+    execFile(
+      "git",
+      ["-C", proj, "status", "--porcelain"],
+      { timeout: 10_000, windowsHide: true },
+      (err, stdout) => {
+        if (err) return resolve([]);
+        const files = String(stdout)
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((l) => l.replace(/^\S+\s+/, "").replace(/^"|"$/g, ""));
+        resolve(files.slice(0, 40));
+      },
+    );
+  });
+}
+
+// ---- reporting ---------------------------------------------------------------
+
+function gatewayAuth() {
+  const cfg = readJson(CONFIG_FILE) ?? {};
+  return { token: cfg?.gateway?.auth?.token ?? "", port: cfg?.gateway?.port ?? 18789 };
+}
+
+function humanSize(bytes) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes)) return "";
+  const mb = bytes / 1_048_576;
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+// The deterministic account, used verbatim when the model is unreachable and as
+// the seed for the model's own version.
+export function fallbackReport(meta, artifact, files) {
+  const name = basename(meta?.project ?? "project");
+  const ok = meta?.status === "done";
+  const head = ok ? `Build finished: ${name}.` : `Build ${meta?.status ?? "ended"}: ${name}.`;
+  const bits = [head];
+  const summary = String(meta?.result?.summary ?? "").trim();
+  if (summary) bits.push(summary.split(/\n\s*\n/)[0].slice(0, 300));
+  if (artifact) bits.push(`APK ready to install: ${artifact.name} (${humanSize(artifact.size)}).`);
+  else if (files?.length) bits.push(`${files.length} file${files.length === 1 ? "" : "s"} changed.`);
+  return bits.join(" ");
+}
+
+// Ask the butler to describe the finished build in its own voice. This is the
+// piece that used to be missing entirely: the runner fired a bare deterministic
+// push, so the model never learned a build had happened and never mentioned it.
+async function generateReport(meta, artifact, files) {
+  const { token, port } = gatewayAuth();
+  if (!token) return null;
+  const name = basename(meta?.project ?? "project");
+  const facts = [
+    `Project: ${name}`,
+    `Task: ${meta?.task ?? "(none recorded)"}`,
+    `Outcome: ${meta?.status}${typeof meta?.exitCode === "number" ? ` (exit code ${meta.exitCode})` : ""}`,
+  ];
+  if (meta?.result?.durationMs) facts.push(`Took: ${Math.round(meta.result.durationMs / 1000)}s`);
+  if (meta?.result?.summary) facts.push(`Claude's own summary:\n${meta.result.summary}`);
+  if (artifact) facts.push(`Installable APK produced: ${artifact.name} (${humanSize(artifact.size)}) — they can install it straight from the app.`);
+  else if (files?.length) facts.push(`Files changed (${files.length}): ${files.slice(0, 15).join(", ")}`);
+
+  const prompt =
+    "SYSTEM EVENT — not a message from your owner. A coding job you handed to Claude Code on the PC " +
+    "just finished. Tell your owner about it now, unprompted, in your own voice.\n\n" +
+    facts.join("\n") +
+    "\n\nWrite 2-4 short sentences: what got built, whether it worked, and what they can do next " +
+    (artifact ? "(mention they can install the APK from the app). " : "(where the code lives). ") +
+    "Plain text, no markdown, no headings, under 90 words. Do not mention this system event.";
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REPORT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        model: "openclaw",
+        // Fresh session per report: the job facts are all the context needed,
+        // and nothing accumulates into the local model's window.
+        user: `build-report-${meta?.id}-${Date.now().toString(36)}`,
+        stream: false,
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const reply = body?.choices?.[0]?.message?.content;
+    if (typeof reply !== "string" || !reply.trim()) return null;
+    return reply.trim();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Push to the phone through butler-approvals' generic notify action — the same
+// route reminders and heartbeats use. `data` carries the job id so tapping the
+// notification can open straight to that build.
+async function sendNotify(title, body, data) {
+  const { token, port } = gatewayAuth();
+  if (!token) return false;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/approvals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        action: "notify",
+        title,
+        body: body.length > MAX_PUSH_CHARS ? body.slice(0, MAX_PUSH_CHARS - 1) + "…" : body,
+        channel: "reminders",
+        data,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Everything that should happen the moment a build lands: find the artifact,
+// list what changed, have the butler say something human about it, push it, and
+// record it all on the job so the app and the next chat turn can both see it.
+async function finalizeJob(jobId) {
+  const safe = String(jobId ?? "").replace(/[^0-9A-Za-z_-]/g, "");
+  if (!safe || finalizing.has(safe)) return null;
+  const file = join(JOBS_DIR, `${safe}.json`);
+  const meta = readJson(file);
+  if (!meta || !TERMINAL.includes(meta.status) || meta.reported) return null;
+  finalizing.add(safe);
+  try {
+    // Re-derive the summary from the log ourselves. The runner also writes one,
+    // but it goes through PowerShell's lossy text handling; this copy is clean.
+    const parsed = resultFrom(readLogText(safe));
+    if (parsed) meta.result = parsed;
+    const artifact = artifactFor(meta);
+    const files = await changedFiles(meta.project);
+    const report = (await generateReport(meta, artifact, files)) ?? fallbackReport(meta, artifact, files);
+    const title = `Build ${meta.status}: ${basename(meta.project ?? "project")}`;
+    const pushed = await sendNotify(title, report, {
+      type: "build",
+      jobId: safe,
+      status: String(meta.status),
+      artifact: artifact ? "apk" : "",
+    });
+    // Re-read: the job file may have been rewritten while the model was thinking.
+    const fresh = readJson(file) ?? meta;
+    if (parsed) fresh.result = parsed;
+    fresh.artifact = artifact;
+    fresh.files = files;
+    fresh.report = report;
+    fresh.reported = true;
+    fresh.reportedAt = new Date().toISOString();
+    fresh.pushed = pushed;
+    try {
+      writeFileSync(file, JSON.stringify(fresh, null, 2), "utf8");
+    } catch {}
+    appendAudit({ action: "build.reported", jobId: safe, status: fresh.status, artifact: artifact?.name ?? null, pushed });
+    return fresh;
+  } finally {
+    finalizing.delete(safe);
+  }
+}
+
+// Catch jobs that reached a terminal state without being reported — a killed
+// runner, a gateway restart mid-finish, or a lost POST. Cheap: only reads the
+// job metadata, and only acts on the unreported ones.
+async function sweepUnreported() {
+  if (!existsSync(JOBS_DIR)) return;
+  let names;
+  try {
+    names = readdirSync(JOBS_DIR).filter((f) => f.endsWith(".json"));
+  } catch {
+    return;
+  }
+  for (const f of names.sort().reverse().slice(0, 20)) {
+    const meta = readJson(join(JOBS_DIR, f));
+    if (!meta || meta.reported || !TERMINAL.includes(meta.status)) continue;
+    try {
+      await finalizeJob(meta.id);
+    } catch {}
+  }
+}
+
+// A one-line "what is it doing right now" digest for a running job, so the app
+// can show live progress without pulling the whole log on every poll.
+export function progressFrom(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  let tools = 0;
+  let last = "";
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t[0] !== "{") continue;
+    let ev;
+    try {
+      ev = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (ev?.type !== "assistant") continue;
+    for (const b of ev.message?.content ?? []) {
+      if (b.type === "tool_use") {
+        tools += 1;
+        const arg = briefInput(b.input);
+        last = `${b.name}${arg ? ` · ${arg}` : ""}`;
+      } else if (b.type === "text" && b.text?.trim()) {
+        last = b.text.trim().split("\n")[0].slice(0, 100);
+      }
+    }
+  }
+  return { tools, last };
+}
+
+function jobProgress(jobId) {
+  return progressFrom(readLogText(jobId) ?? "");
 }
 
 // Live keep-awake + active-work status for the app's dashboard.
@@ -299,7 +637,7 @@ function readBody(req) {
 }
 
 // Named exports for unit testing the pure helpers (see index.test.js).
-export { formatClaudeStream, parseDurationMs, parseBuildArgs, briefInput };
+export { formatClaudeStream, parseDurationMs, parseBuildArgs, briefInput, humanSize };
 
 export default {
   id: "code-dispatch",
@@ -313,6 +651,14 @@ export default {
       reconcileJobs();
       pruneJobs();
     } catch {}
+
+    // Safety net for the report path: any build that reached a terminal state
+    // without being reported gets picked up here, including ones that finished
+    // while the gateway was down.
+    if (!sweepTimer) {
+      sweepTimer = setInterval(() => sweepUnreported().catch(() => {}), SWEEP_MS);
+      if (typeof sweepTimer.unref === "function") sweepTimer.unref();
+    }
 
     // Agent-callable build tool. This is what makes building conversational: when
     // the owner describes something to build in chat, the model calls this and the
@@ -446,6 +792,14 @@ export default {
           if (!body.jobId) return send(400, { error: "Need jobId" });
           return send(200, { log: jobLogTail(body.jobId) });
         }
+        // Fired by the job runner the instant a build lands. Kicks off artifact
+        // detection + the butler's spoken report. The sweep covers a lost POST,
+        // so this is about latency, not correctness.
+        if (body.action === "jobFinished") {
+          if (!body.jobId) return send(400, { error: "Need jobId" });
+          const meta = await finalizeJob(body.jobId);
+          return send(200, { ok: true, report: meta?.report ?? null, artifact: meta?.artifact ?? null });
+        }
         if (body.action === "awake") {
           return send(200, { text: setAwakeHold(body.duration), status: awakeStatus() });
         }
@@ -453,6 +807,40 @@ export default {
           return send(200, { status: awakeStatus() });
         }
         return send(400, { error: "Unknown action" });
+      },
+    });
+
+    // Artifact download. The one route that answers "give me the thing you just
+    // built" — the app fetches it with the gateway token and hands it to
+    // Android's installer. Served by job id, never by caller-supplied path, so
+    // this can't be walked into an arbitrary file read.
+    api.registerHttpRoute({
+      path: "/api/v1/code-dispatch/artifact",
+      auth: "gateway",
+      match: "exact",
+      handler: (req, res) => {
+        const jobId = String(new URL(req.url, "http://localhost").searchParams.get("jobId") ?? "")
+          .replace(/[^0-9A-Za-z_-]/g, "");
+        const meta = jobId ? readJson(join(JOBS_DIR, `${jobId}.json`)) : null;
+        const art = meta?.artifact;
+        if (!art?.path || !existsSync(art.path)) {
+          res.statusCode = 404;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ error: "No artifact for this job" }));
+          return true;
+        }
+        let size = art.size;
+        try {
+          size = statSync(art.path).size;
+        } catch {}
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/vnd.android.package-archive");
+        res.setHeader("Content-Length", String(size));
+        res.setHeader("Content-Disposition", `attachment; filename="${art.name.replace(/[^\w.-]/g, "_")}"`);
+        const stream = createReadStream(art.path);
+        stream.on("error", () => res.end());
+        stream.pipe(res);
+        return true;
       },
     });
 
@@ -487,6 +875,10 @@ export default {
         let lastSize = -1;
         let lastBeat = Date.now();
         let tick;
+        // Set once the job goes terminal: the stream then stays open a little
+        // longer waiting for the butler's report, so a client watching live gets
+        // the spoken result in the same stream instead of a silent cutoff.
+        let terminalAt = 0;
         const cleanup = () => {
           if (tick) clearInterval(tick);
           tick = null;
@@ -508,7 +900,31 @@ export default {
           }
           const m = readJson(metaFile);
           if (m && TERMINAL.includes(m.status)) {
-            res.write(`event: end\ndata: ${JSON.stringify({ status: m.status, result: m.result ?? null, exitCode: m.exitCode ?? null })}\n\n`);
+            if (!terminalAt) {
+              terminalAt = Date.now();
+              // Nothing else may have noticed yet if the runner's POST was lost.
+              finalizeJob(jobId).catch(() => {});
+            }
+            // Hold briefly for the report; don't strand the client if it never
+            // lands. Comment frames only every 20s — this can wait ~100s and a
+            // per-tick comment would be a hundred pointless writes.
+            if (!m.reported && Date.now() - terminalAt < REPORT_TIMEOUT_MS + 10_000) {
+              if (Date.now() - lastBeat > 20_000) {
+                lastBeat = Date.now();
+                res.write(`: awaiting-report\n\n`);
+              }
+              return;
+            }
+            res.write(
+              `event: end\ndata: ${JSON.stringify({
+                status: m.status,
+                result: m.result ?? null,
+                exitCode: m.exitCode ?? null,
+                report: m.report ?? null,
+                artifact: m.artifact ? { type: m.artifact.type, name: m.artifact.name, size: m.artifact.size } : null,
+                files: m.files ?? null,
+              })}\n\n`,
+            );
             cleanup();
             res.end();
             return;

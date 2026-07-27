@@ -75,3 +75,30 @@ test("buildAwareness stays generic when no owner is configured", () => {
   assert.match(out, /# What you know about your human \(auto-recalled/);
   assert.doesNotMatch(out, /Jordan/);
 });
+
+test("buildAwareness reports a recently finished build with its APK", () => {
+  const out = buildAwareness({
+    now: new Date(2026, 5, 30, 9, 0),
+    owner: "Jordan",
+    finished: [{ project: "butler-app", status: "done", artifact: "butler-v0.24.0.apk", fileCount: 12 }],
+  });
+  assert.match(out, /A build of butler-app recently finished successfully\./);
+  assert.match(out, /installable APK \(butler-v0\.24\.0\.apk\)/);
+});
+
+test("buildAwareness falls back to a changed-file count with no artifact", () => {
+  const out = buildAwareness({
+    now: new Date(2026, 5, 30, 9, 0),
+    finished: [{ project: "calendar-sync", status: "done", artifact: null, fileCount: 1 }],
+  });
+  assert.match(out, /It changed 1 file\./);
+  assert.doesNotMatch(out, /APK/);
+});
+
+test("buildAwareness names a failed build by its status", () => {
+  const out = buildAwareness({
+    now: new Date(2026, 5, 30, 9, 0),
+    finished: [{ project: "hollow", status: "failed", artifact: null, fileCount: 0 }],
+  });
+  assert.match(out, /A build of hollow recently failed\./);
+});

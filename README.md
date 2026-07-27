@@ -28,7 +28,7 @@ plugin/butler-brain/       cloud-brain escalation: hand a hard question to Claud
 plugin/butler-models/      model list/switch for the app's model picker
 plugin/code-dispatch/      POST /api/v1/code-dispatch (+ SSE /stream) and /build /jobs /cancel /awake chat commands
 scripts/dispatch-claude.ps1   launches a headless Claude Code build for a project, tracks it as a job (records PID + result summary)
-scripts/check-claude.ps1      lists/inspects jobs and marks them reported
+scripts/check-claude.ps1      lists/inspects jobs (reporting is automatic; see jobFinished)
 scripts/cancel-claude.ps1     cancels a running job (kills the runner process tree, marks it canceled)
 scripts/openclaw-awake.ps1    keeps the PC awake only while a build (or an /awake hold) is active
 config/openclaw.example.json  complete example gateway config (all plugins wired; secrets are placeholders)
@@ -42,8 +42,9 @@ Once set up, the gateway exposes (token-authenticated, tailnet-only):
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat against your local Ollama model (streaming), with persona + awareness + memory injected every turn |
-| `POST /api/v1/code-dispatch` | `build` / `cancel` / `jobsData` / `jobLog` / `awake` / `status` actions used by the apps |
+| `POST /api/v1/code-dispatch` | `build` / `cancel` / `jobsData` / `jobLog` / `jobFinished` / `awake` / `status` actions used by the apps |
 | `GET /api/v1/code-dispatch/stream?jobId=` | SSE live job-log stream (real-time progress; apps fall back to polling) |
+| `GET /api/v1/code-dispatch/artifact?jobId=` | downloads a finished build's APK (token-authed, so the app fetches it — not a tappable link) |
 | `POST /api/v1/approvals` | `request` / `list` / `decide` / `history` / `notify` — the approval loop + generic phone push |
 | `GET /api/v1/approvals/stream` | SSE live approval stream (pending/resolved events for the app) |
 | `POST /api/v1/memory` | `list` / `add` / `delete` / `journal` — the app's Memory screen + end-of-session journal |
@@ -65,8 +66,17 @@ app  ──▶  POST /api/v1/code-dispatch {action:"build", project, task}
             └─ code-dispatch plugin  ──▶  dispatch-claude.ps1
                                             └─ claude -p (headless, streaming) in ~/repos/<project>
                                                  └─ writes job json + live log to ~/.openclaw/workspace/jobs/
-                                                 └─ on finish: wakes the agent to message you
+                                                 └─ on finish: POSTs {action:"jobFinished"} back to the plugin
+                                                      ├─ finds any .apk the build produced
+                                                      ├─ lists what changed (git status)
+                                                      ├─ asks the butler to write the outcome up in its own voice
+                                                      └─ pushes that to your phone, marks the job reported
 ```
+
+A finished build is never silent: the write-up lands as a push, the Activity
+screen and chat bubble show it, an APK gets an Install button, and recently
+finished builds stay in the model's context so it can answer questions about
+them. A sweep every 30s catches any job whose runner never got to report.
 
 ---
 
