@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseWhen, toRfc3339, buildJwtClaims, pluginConfigFrom } from "./index.js";
+import { parseWhen, toRfc3339, buildJwtClaims, pluginConfigFrom, matchEvents, describeEvent } from "./index.js";
 
 // A fixed "now": Monday 27 July 2026, 14:30 local.
 const NOW = new Date(2026, 6, 27, 14, 30, 0);
@@ -90,4 +90,53 @@ test("pluginConfigFrom reads our entry out of the gateway config", () => {
   assert.deepEqual(pluginConfigFrom({}), {});
   assert.deepEqual(pluginConfigFrom(undefined), {});
   assert.deepEqual(pluginConfigFrom({ plugins: { entries: {} } }), {});
+});
+
+const ev = (summary, dateTime) => ({ id: summary, summary, start: { dateTime } });
+
+test("matchEvents finds an event by its exact title", () => {
+  const items = [ev("Lunch with Sam", "2026-07-28T12:30:00-06:00"), ev("Dentist", "2026-07-29T14:00:00-06:00")];
+  const got = matchEvents(items, "Lunch with Sam");
+  assert.equal(got.length, 1);
+  assert.equal(got[0].summary, "Lunch with Sam");
+});
+
+test("matchEvents is case-insensitive and matches on a fragment", () => {
+  const items = [ev("Lunch with Sam", "2026-07-28T12:30:00-06:00")];
+  assert.equal(matchEvents(items, "lunch")[0]?.summary, "Lunch with Sam");
+  assert.equal(matchEvents(items, "LUNCH WITH SAM")[0]?.summary, "Lunch with Sam");
+});
+
+test("matchEvents prefers an exact title over looser matches", () => {
+  // "Standup" must not drag in "Standup prep" when the owner named it exactly.
+  const items = [ev("Standup", "2026-07-28T09:00:00-06:00"), ev("Standup prep", "2026-07-28T08:30:00-06:00")];
+  const got = matchEvents(items, "Standup");
+  assert.equal(got.length, 1);
+  assert.equal(got[0].summary, "Standup");
+});
+
+test("matchEvents returns every candidate when genuinely ambiguous", () => {
+  // The caller refuses to delete on more than one; it must not silently pick.
+  const items = [ev("Team meeting", "2026-07-28T09:00:00-06:00"), ev("Client meeting", "2026-07-28T11:00:00-06:00")];
+  assert.equal(matchEvents(items, "meeting").length, 2);
+});
+
+test("matchEvents matches on significant words in any order", () => {
+  const items = [ev("Sam / lunch catch-up", "2026-07-28T12:30:00-06:00")];
+  assert.equal(matchEvents(items, "lunch with Sam").length, 1);
+});
+
+test("matchEvents finds nothing rather than guessing", () => {
+  const items = [ev("Dentist", "2026-07-29T14:00:00-06:00")];
+  assert.deepEqual(matchEvents(items, "haircut"), []);
+  assert.deepEqual(matchEvents(items, ""), []);
+  assert.deepEqual(matchEvents([], "anything"), []);
+  // Stop-words alone must not match everything.
+  assert.deepEqual(matchEvents(items, "the my"), []);
+});
+
+test("describeEvent reads back title and time", () => {
+  const s = describeEvent(ev("Lunch with Sam", "2026-07-28T12:30:00-06:00"));
+  assert.match(s, /Lunch with Sam/);
+  assert.match(s, /12:30/);
 });

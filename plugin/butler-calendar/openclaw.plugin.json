@@ -1,7 +1,7 @@
 {
   "id": "butler-calendar",
   "name": "Butler Calendar",
-  "description": "Create and read Google Calendar events through a service account — no OAuth consent screen, no refresh token to expire.",
+  "description": "Create and read Google Calendar events through a service account \u2014 no OAuth consent screen, no refresh token to expire.",
   "activation": {
     "onStartup": true
   },
@@ -15,11 +15,15 @@
       },
       "calendarId": {
         "type": "string",
-        "description": "Calendar to write to. Defaults to 'primary'. For a service account, 'primary' is its own calendar — set this to the owner's address (e.g. you@gmail.com) to write to theirs."
+        "description": "Calendar to write to. Defaults to 'primary'. For a service account, 'primary' is its own calendar \u2014 set this to the owner's address (e.g. you@gmail.com) to write to theirs."
       }
     }
   },
   "contracts": {
-    "tools": ["create_event", "list_events"]
+    "tools": [
+      "create_event",
+      "list_events",
+      "delete_event"
+    ]
   }
 }

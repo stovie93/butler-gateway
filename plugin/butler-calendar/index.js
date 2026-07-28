@@ -1,5 +1,5 @@
 import { createSign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -38,9 +38,8 @@ function ownerRef() {
 
 function appendAudit(entry) {
   try {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
     // Writing the calendar changes something the owner will see; keep a trail.
-    import("node:fs").then(({ appendFileSync }) => appendFileSync(AUDIT_FILE, line, "utf8")).catch(() => {});
+    appendFileSync(AUDIT_FILE, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n", "utf8");
   } catch {}
 }
 
@@ -199,6 +198,45 @@ async function api(config, method, path, body) {
   return data;
 }
 
+/**
+ * Narrow a list of events to the ones a plain-language reference could mean.
+ *
+ * The model never sees event ids, so a deletion arrives as words like "lunch
+ * with Sam". Matching has to be forgiving enough to find it and strict enough
+ * that "meeting" doesn't sweep up four of them — hence the caller refusing to
+ * act on an ambiguous result rather than picking one.
+ */
+export function matchEvents(items, query) {
+  const q = String(query ?? "").trim().toLowerCase();
+  if (!q) return [];
+  const summaries = items.map((e) => ({ e, s: String(e.summary ?? "").toLowerCase() }));
+
+  const exact = summaries.filter((x) => x.s === q);
+  if (exact.length) return exact.map((x) => x.e);
+
+  const substring = summaries.filter((x) => x.s.includes(q) || q.includes(x.s));
+  if (substring.length) return substring.map((x) => x.e);
+
+  // Last resort: every significant word in the query appears in the title.
+  const words = q.split(/\s+/).filter((w) => w.length > 2 && !["the", "and", "with", "for", "my"].includes(w));
+  if (!words.length) return [];
+  return summaries.filter((x) => words.every((w) => x.s.includes(w))).map((x) => x.e);
+}
+
+/** How an event reads back to the owner when we need them to disambiguate. */
+export function describeEvent(e) {
+  const when = e?.start?.dateTime
+    ? new Date(e.start.dateTime).toLocaleString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : (e?.start?.date ?? "?");
+  return `${e?.summary ?? "(no title)"} — ${when}`;
+}
+
 export default {
   id: "butler-calendar",
   name: "Butler Calendar",
@@ -283,6 +321,66 @@ export default {
         } catch (err) {
           appendAudit({ action: "create.failed", summary, error: String(err?.message ?? err) });
           return { content: [{ type: "text", text: `Couldn't add it: ${err?.message ?? err}` }] };
+        }
+      },
+    });
+
+    api_.registerTool({
+      name: "delete_event",
+      description:
+        `Remove an event from ${who}'s Google Calendar. Use this when they ask to cancel, delete, ` +
+        "remove, or clear something off their calendar. Refer to it the way they did — the title is " +
+        "enough, e.g. 'lunch with Sam'. If several events could match you will be told, so ask which " +
+        "one rather than guessing.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Title or description of the event to remove, in their words." },
+          days: { type: "number", description: "How many days ahead to search. Defaults to 30." },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      async execute(_id, params) {
+        const query = String(params?.query ?? "").trim();
+        if (!query) return { content: [{ type: "text", text: "Which event should I remove?" }] };
+        const days = Number(params?.days) > 0 ? Number(params.days) : 30;
+
+        try {
+          const data = await api(
+            cfg,
+            "GET",
+            `/calendars/${encodeURIComponent(calendarId)}/events?singleEvents=true&orderBy=startTime` +
+              `&timeMin=${encodeURIComponent(new Date().toISOString())}` +
+              `&timeMax=${encodeURIComponent(new Date(Date.now() + days * 86_400_000).toISOString())}&maxResults=50`,
+          );
+          const matches = matchEvents(data?.items ?? [], query);
+
+          if (matches.length === 0) {
+            return { content: [{ type: "text", text: `I couldn't find anything matching "${query}" on the calendar.` }] };
+          }
+          // Deleting the wrong appointment is not something an apology fixes, so
+          // ambiguity stops here instead of resolving to a best guess.
+          if (matches.length > 1) {
+            const list = matches.slice(0, 5).map((e) => `• ${describeEvent(e)}`).join("\n");
+            return {
+              content: [
+                { type: "text", text: `That matches ${matches.length} events — which one?\n${list}` },
+              ],
+            };
+          }
+
+          const target = matches[0];
+          await api(
+            cfg,
+            "DELETE",
+            `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(target.id)}`,
+          );
+          appendAudit({ action: "delete", summary: target.summary, start: target.start?.dateTime ?? target.start?.date, id: target.id });
+          return { content: [{ type: "text", text: `Removed "${describeEvent(target)}".` }] };
+        } catch (err) {
+          appendAudit({ action: "delete.failed", query, error: String(err?.message ?? err) });
+          return { content: [{ type: "text", text: `Couldn't remove it: ${err?.message ?? err}` }] };
         }
       },
     });
