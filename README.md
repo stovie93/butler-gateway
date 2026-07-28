@@ -26,6 +26,7 @@ plugin/butler-heartbeat/   scheduled agent check-ins pushed to the phone + an un
 plugin/butler-websearch/   live web answers (Tavily) + server-side fetch of pasted URLs, SSRF-guarded, audited
 plugin/butler-brain/       cloud-brain escalation: hand a hard question to Claude via an [[ASK]] marker card; answer lands in chat + push
 plugin/butler-models/      model list/switch for the app's model picker
+plugin/butler-calendar/   create_event / list_events on Google Calendar via a service account (no OAuth consent, no token expiry)
 plugin/code-dispatch/      POST /api/v1/code-dispatch (+ SSE /stream) and /build /jobs /cancel /awake chat commands
 scripts/dispatch-claude.ps1   launches a headless Claude Code build for a project, tracks it as a job (records PID + result summary)
 scripts/check-claude.ps1      lists/inspects jobs (reporting is automatic; see jobFinished)

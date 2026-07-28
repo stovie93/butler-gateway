@@ -1,0 +1,25 @@
+{
+  "id": "butler-calendar",
+  "name": "Butler Calendar",
+  "description": "Create and read Google Calendar events through a service account — no OAuth consent screen, no refresh token to expire.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serviceAccountPath": {
+        "type": "string",
+        "description": "Path to a Google service-account JSON key. Defaults to ~/.openclaw/fcm-service-account.json (the same key butler-approvals uses for push). The target calendar must be shared with that account's client_email as 'Make changes to events', and the Calendar API enabled on its project."
+      },
+      "calendarId": {
+        "type": "string",
+        "description": "Calendar to write to. Defaults to 'primary'. For a service account, 'primary' is its own calendar — set this to the owner's address (e.g. you@gmail.com) to write to theirs."
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["create_event", "list_events"]
+  }
+}

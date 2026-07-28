@@ -1,0 +1,14 @@
+{
+  "name": "butler-calendar",
+  "version": "1.0.0",
+  "description": "Google Calendar events for the butler, via a service account.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}
