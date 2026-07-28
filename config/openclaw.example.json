@@ -1,24 +1,38 @@
 {
   "agents": {
     "defaults": {
-      "model": { "primary": "ollama/gpt-oss:20b" },
+      "model": {
+        "primary": "ollama/gpt-oss:20b"
+      },
       "models": {
         "ollama/gpt-oss:20b": {},
         "ollama/qwen2.5:14b": {}
       },
-      "sandbox": { "mode": "non-main" },
-      "memorySearch": { "provider": "ollama", "model": "nomic-embed-text" }
+      "sandbox": {
+        "mode": "non-main"
+      },
+      "memorySearch": {
+        "provider": "ollama",
+        "model": "nomic-embed-text"
+      }
     }
   },
   "gateway": {
     "mode": "local",
-    "auth": { "mode": "token", "token": "REPLACE_WITH_A_LONG_RANDOM_TOKEN" },
+    "auth": {
+      "mode": "token",
+      "token": "REPLACE_WITH_A_LONG_RANDOM_TOKEN"
+    },
     "port": 18789,
     "bind": "loopback",
-    "tailscale": { "mode": "serve" },
+    "tailscale": {
+      "mode": "serve"
+    },
     "http": {
       "endpoints": {
-        "chatCompletions": { "enabled": true }
+        "chatCompletions": {
+          "enabled": true
+        }
       }
     }
   },
@@ -33,11 +47,17 @@
             "id": "gpt-oss:20b",
             "name": "gpt-oss:20b",
             "reasoning": true,
-            "compat": { "supportsTools": true },
-            "input": ["text"],
+            "compat": {
+              "supportsTools": true
+            },
+            "input": [
+              "text"
+            ],
             "contextWindow": 65536,
             "maxTokens": 8192,
-            "params": { "num_ctx": 65536 }
+            "params": {
+              "num_ctx": 65536
+            }
           }
         ]
       }
@@ -54,24 +74,52 @@
       "recall",
       "forget",
       "notify_owner",
-      "run_command"
+      "run_command",
+      "create_event",
+      "list_events",
+      "delete_event"
     ]
   },
   "plugins": {
     "entries": {
-      "code-dispatch": { "enabled": true },
-      "butler-persona": { "enabled": true },
-      "butler-memory": { "enabled": true, "config": { "reindexOnWrite": true } },
-      "butler-awareness": { "enabled": true },
-      "butler-pc": { "enabled": true },
-      "butler-models": { "enabled": true },
-      "butler-shell": { "enabled": true },
-      "butler-websearch": { "enabled": true },
-      "butler-brain": { "enabled": true },
+      "code-dispatch": {
+        "enabled": true
+      },
+      "butler-persona": {
+        "enabled": true
+      },
+      "butler-memory": {
+        "enabled": true,
+        "config": {
+          "reindexOnWrite": true
+        }
+      },
+      "butler-awareness": {
+        "enabled": true
+      },
+      "butler-pc": {
+        "enabled": true
+      },
+      "butler-models": {
+        "enabled": true
+      },
+      "butler-shell": {
+        "enabled": true
+      },
+      "butler-websearch": {
+        "enabled": true
+      },
+      "butler-brain": {
+        "enabled": true
+      },
       "butler-approvals": {
         "enabled": true,
         "config": {
-          "sensitiveTools": ["pc_power", "build_project"],
+          "sensitiveTools": [
+            "pc_power",
+            "build_project",
+            "delete_event"
+          ],
           "timeoutMs": 120000,
           "timeoutBehavior": "deny",
           "enableTestCommand": true,
@@ -99,16 +147,30 @@
               "id": "morning-briefing",
               "at": "08:00",
               "mode": "always",
-              "title": "Butler ☀️",
+              "title": "Butler \u2600\ufe0f",
               "prompt": "Good morning! This is your scheduled morning heartbeat. Using what you can see right now (the time, anything running on the PC, pending reminders, what you remember), write a short, warm good-morning message for the day ahead. Keep it under 80 words, plain text, no markdown."
             }
           ],
-          "quietHours": { "start": "22:00", "end": "08:00" }
+          "quietHours": {
+            "start": "22:00",
+            "end": "08:00"
+          }
         }
       },
       "tavily": {
         "enabled": true,
-        "config": { "webSearch": { "apiKey": "REPLACE_WITH_YOUR_TAVILY_KEY_OR_DISABLE" } }
+        "config": {
+          "webSearch": {
+            "apiKey": "REPLACE_WITH_YOUR_TAVILY_KEY_OR_DISABLE"
+          }
+        }
+      },
+      "butler-calendar": {
+        "enabled": true,
+        "config": {
+          "calendarId": "you@gmail.com",
+          "serviceAccountPath": "C:\\Users\\you\\.openclaw\\fcm-service-account.json"
+        }
       }
     }
   }
