@@ -57,11 +57,15 @@ instead, which the gateway enforces itself:
 
 ```json
 "tools": {
-  "toolsBySender": { "*": { "deny": ["group:runtime", "write", "edit", "apply_patch"] } }
+  "toolsBySender": { "*": { "deny": ["group:runtime", "apply_patch"] } }
 }
 ```
 
-`read` stays allowed, so the butler can still answer questions about your files.
+`read`, `write` and `edit` stay allowed, so the butler can still answer questions about
+your files and save things for you. `apply_patch` is denied because it can delete a file
+outright, which is the thing being fenced. Note that `write` to an existing path
+overwrites it — this stops files being removed or moved, not their contents being
+replaced; add `write` and `edit` to the deny list too if you want that closed as well.
 Shell access then exists only through butler-shell's `run_command`, which requests
 approval inside `execute` and fails closed — so every command reaches your phone with
 its exact text before it runs. Builds are unaffected: they go through `build_project`

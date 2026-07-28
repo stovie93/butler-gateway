@@ -83,8 +83,6 @@
       "*": {
         "deny": [
           "group:runtime",
-          "write",
-          "edit",
           "apply_patch"
         ]
       }
