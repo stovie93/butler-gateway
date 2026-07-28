@@ -78,7 +78,17 @@
       "create_event",
       "list_events",
       "delete_event"
-    ]
+    ],
+    "toolsBySender": {
+      "*": {
+        "deny": [
+          "group:runtime",
+          "write",
+          "edit",
+          "apply_patch"
+        ]
+      }
+    }
   },
   "plugins": {
     "entries": {

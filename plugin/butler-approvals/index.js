@@ -78,6 +78,10 @@ function loadConfig() {
     timeoutMs: typeof c.timeoutMs === "number" && c.timeoutMs >= 1000 ? c.timeoutMs : 120_000,
     timeoutBehavior: c.timeoutBehavior === "allow" ? "allow" : "deny",
     enableTestCommand: Boolean(c.enableTestCommand),
+    // Gate shell commands that delete or move files, whatever tool they arrive
+    // through. On by default: gating exec wholesale is impractical, and leaving
+    // deletion ungated is the gap that matters. Set false to turn it off.
+    gateDestructiveCommands: c.gateDestructiveCommands !== false,
     pcNotify: c.pcNotify !== false, // PC toast on by default; set false to silence
     // FCM push: enabled only when both fields are present (and the SA file exists,
     // checked lazily at send time). Absent → push silently disabled.
@@ -302,6 +306,101 @@ function isSensitive(toolName, sensitiveTools) {
   return sensitiveTools.some((p) => globToRegExp(p).test(toolName));
 }
 
+// Tools that hand a shell command straight to the OS. Gating by tool name alone
+// is useless here: nearly every exec is harmless, and blanket-gating them would
+// train the owner to approve reflexively, which is worse than not gating at all.
+//
+// butler-shell's run_command is deliberately absent: it requests approval itself
+// inside execute, so gating it here too produced two cards for one deletion —
+// the same double-prompt this plugin's docs warn about.
+const SHELL_TOOLS = ["exec", "bash", "shell", "process", "code_execution"];
+
+// Commands that remove or relocate files, including PowerShell's aliases and the
+// cmd.exe spellings. `mv`/`move` are here because a move destroys the original
+// path just as surely as a delete does.
+const DESTRUCTIVE_COMMANDS = new Set([
+  // remove
+  "rm", "rmdir", "rd", "del", "erase", "unlink", "shred", "srm",
+  "remove-item", "ri", "erase-item",
+  // move / rename
+  "mv", "move", "ren", "rename", "move-item", "mi", "rename-item", "rni", "rn",
+  // wipe-ish
+  "truncate",
+]);
+
+/** Strip quoting and any directory prefix so `C:\Windows\System32\del.exe` and
+ *  `"del"` both reduce to `del`. */
+function normalizeCommandWord(word) {
+  let w = String(word ?? "").trim().replace(/^["']|["']$/g, "");
+  w = w.split(/[\\/]/).pop() ?? w;
+  return w.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+}
+
+/**
+ * Decide whether a shell command deletes or moves anything.
+ *
+ * Splits on separators and inspects the first real word of each segment, so a
+ * destructive command hidden behind `&&`, `;` or a pipe is still caught, while
+ * an innocent mention of the word (`npm run rm-cache`, a filename containing
+ * "move") is not. Leading env assignments and `sudo` are skipped.
+ */
+export function isDestructiveCommand(command) {
+  const text = String(command ?? "");
+  if (!text.trim()) return false;
+
+  for (const rawSegment of text.split(/(?:&&|\|\||[;\n|])/)) {
+    const segment = rawSegment.trim();
+    if (!segment) continue;
+
+    const words = segment.split(/\s+/);
+    let i = 0;
+    // Skip VAR=value prefixes and privilege wrappers to reach the real verb.
+    while (i < words.length) {
+      const w = words[i];
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || ["sudo", "doas", "command", "nohup"].includes(normalizeCommandWord(w))) {
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    if (i >= words.length) continue;
+
+    const verb = normalizeCommandWord(words[i]);
+    if (DESTRUCTIVE_COMMANDS.has(verb)) return true;
+
+    // `git rm` / `git mv` are the verb's second word.
+    if (verb === "git") {
+      const sub = normalizeCommandWord(words[i + 1] ?? "");
+      if (sub === "rm" || sub === "mv") return true;
+      if (sub === "clean" && words.slice(i + 2).some((f) => /^-[a-z]*[fd]/i.test(f))) return true;
+    }
+
+    // One-liners that delete through a library instead of a shell verb. Note the
+    // \w* — the API is usually the Sync variant (`unlinkSync`), and a plain \b
+    // after the verb would miss every one of them.
+    if (["node", "npx", "bun", "deno", "python", "python3"].includes(verb)) {
+      if (/\b(unlink|rmdir|rmtree)\w*\s*\(/i.test(segment)) return true;
+      if (/\b(os|shutil|fs|fsPromises|pathlib)\s*\.\s*(remove|rename|move|rm)\w*\s*\(/i.test(segment)) return true;
+    }
+  }
+  return false;
+}
+
+/** Pull a command string out of whatever shape the tool used for it. */
+export function extractCommand(params) {
+  if (!params || typeof params !== "object") return "";
+  const v = params.command ?? params.cmd ?? params.script ?? params.args ?? params.input;
+  if (Array.isArray(v)) return v.join(" ");
+  return typeof v === "string" ? v : "";
+}
+
+/** True when this call should be gated because of what it does, not what it is. */
+export function needsCommandApproval(toolName, params, enabled = true) {
+  if (!enabled) return false;
+  if (!SHELL_TOOLS.includes(String(toolName ?? "").toLowerCase())) return false;
+  return isDestructiveCommand(extractCommand(params));
+}
+
 function isValidDecision(d) {
   return VALID_DECISIONS.includes(d);
 }
@@ -513,11 +612,16 @@ export default {
     // actually gates tool calls. `api.on` pushes into the typed-hook registry.
     const gateHandler = async (event, ctx) => {
       try {
-        if (!isSensitive(event?.toolName, cfg.sensitiveTools)) return;
+        const bySensitiveName = isSensitive(event?.toolName, cfg.sensitiveTools);
+        // A shell command that deletes or moves files is gated on what it does,
+        // since the tool it arrives through (exec) is far too broad to gate whole.
+        const byDestructiveCommand =
+          !bySensitiveName && needsCommandApproval(event?.toolName, event?.params, cfg.gateDestructiveCommands);
+        if (!bySensitiveName && !byDestructiveCommand) return;
         const record = createPending({
-          toolName: event.toolName,
+          toolName: byDestructiveCommand ? `${event.toolName} (deletes or moves files)` : event.toolName,
           params: event.params,
-          severity: cfg.defaultSeverity,
+          severity: byDestructiveCommand ? "warning" : cfg.defaultSeverity,
           agentId: ctx?.agentId ?? null,
           sessionKey: ctx?.sessionKey ?? null,
           timeoutMs: cfg.timeoutMs,

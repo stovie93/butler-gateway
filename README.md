@@ -46,6 +46,27 @@ Once set up, the gateway exposes (token-authenticated, tailnet-only):
 | `POST /api/v1/code-dispatch` | `build` / `cancel` / `jobsData` / `jobLog` / `jobFinished` / `awake` / `status` actions used by the apps |
 | `GET /api/v1/code-dispatch/stream?jobId=` | SSE live job-log stream (real-time progress; apps fall back to polling) |
 | `GET /api/v1/code-dispatch/artifact?jobId=` | downloads a finished build's APK (token-authed, so the app fetches it — not a tappable link) |
+
+### Keeping the butler out of your files
+
+`tools.profile: "coding"` hands the model `read`/`write`/`edit`/`apply_patch` and
+`exec`/`process`/`code_execution` — with `sandbox.mode: "off"` that is your whole user
+account, and `before_tool_call` gating is not a reliable way to fence it: the model
+simply reaches for whichever tool is still available. Deny them at the policy layer
+instead, which the gateway enforces itself:
+
+```json
+"tools": {
+  "toolsBySender": { "*": { "deny": ["group:runtime", "write", "edit", "apply_patch"] } }
+}
+```
+
+`read` stays allowed, so the butler can still answer questions about your files.
+Shell access then exists only through butler-shell's `run_command`, which requests
+approval inside `execute` and fails closed — so every command reaches your phone with
+its exact text before it runs. Builds are unaffected: they go through `build_project`
+and Claude Code, not the model's own shell.
+
 | `POST /api/v1/approvals` | `request` / `list` / `decide` / `history` / `notify` — the approval loop + generic phone push |
 | `GET /api/v1/approvals/stream` | SSE live approval stream (pending/resolved events for the app) |
 | `POST /api/v1/memory` | `list` / `add` / `delete` / `journal` — the app's Memory screen + end-of-session journal |
